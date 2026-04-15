@@ -1,0 +1,33 @@
+{
+    "configurations": [
+        {
+            "name": "ARM",
+            "includePath": [
+                "${workspaceFolder}/app/inc",
+                "${workspaceFolder}/libopencm3/include"
+            ],
+            "defines": [
+                "STM32F4"
+            ],
+            "compilerPath": "C:/msys64/ucrt64/bin/arm-none-eabi-gcc.exe",
+            "compilerArgs": [
+                "-mthumb",
+                "-mcpu=cortex-m4",
+                "-mfloat-abi=hard",
+                "-mfpu=fpv4-sp-d16"
+            ],
+            "cStandard": "c99",
+            "cppStandard": "c++14",
+            "intelliSenseMode": "windows-gcc-arm",
+            "browse": {
+                "path": [
+                    "${workspaceFolder}/app/inc",
+                    "${workspaceFolder}/app/src",
+                    "${workspaceFolder}/libopencm3/include"
+                ],
+                "limitSymbolsToIncludedHeaders": true
+            }
+        }
+    ],
+    "version": 4
+}
