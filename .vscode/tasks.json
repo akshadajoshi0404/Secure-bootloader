@@ -32,6 +32,14 @@
       },
       "command": "make bin",
       "problemMatcher": "$gcc"
+    },
+    {
+    "label": "pad_bootloader",
+    "type": "shell",
+    "command": "C:/msys64/usr/bin/python3.exe bootloaderPadding.py",
+    "options": {
+        "cwd": "${workspaceFolder}/bootloader"
+      }
     }
   ]
 }
