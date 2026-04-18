@@ -41,3 +41,11 @@ Setting up the project structure and Makefile for the bootloader. The Makefile i
 
         2. Include the bootloader binary by wrapping the raw data up inside an object file. 
 
+
+///////////////////////////////
+The libopencm3 build completed successfully. All targets compiled and archived without errors.
+
+Summary: The issue was that git submodule update --remote --merge moved the submodule from a pinned commit (189017b2) to the latest origin/master (87a080c9), which requires Python to generate header files at build time. The Windows Store python3 stub was intercepting the call. Prepending bin to PATH resolved it.
+
+I also added a build_libopencm3 task to your tasks.json so you can rebuild it from VS Code in the future without needing to manually set the PATH each time.
+//////////////////////////////////////
