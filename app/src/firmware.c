@@ -1,9 +1,10 @@
 #include <libopencm3/stm32/rcc.h>
 #include <libopencm3/stm32/gpio.h>
 #include "core/system.h"
-#include "core/timer.h"
+#include "timer.h"
 #include "libopencm3/cm3/scb.h" /*System control block 1. Register Definitions (Memory-Mapped I/O) 
 The header defines memory-mapped registers (MMIO32) for the SCB, enabling control over the processor core: Vector Table and many more*/
+#include "core/uart.h"
 
 #define BOOTLOADR_SIZE 0x8000 /* 32 KB bootloader size */
 
@@ -41,6 +42,7 @@ int main(void) {
   system_setup();
   gpio_setup();
   timer_setup();
+  uart_setup();
 
   float duty_cycle = 0.0f;
   timer_pwm_set_duty_cycle(duty_cycle); /* Set initial duty cycle to 0% */
@@ -56,6 +58,14 @@ int main(void) {
       timer_pwm_set_duty_cycle(duty_cycle); /* Update duty cycle */ 
       last_tick = system_get_ticks();
      // gpio_toggle(LED_PORT, LED_PIN);
+    }
+
+    if(uart_data_available())
+    {
+        uint8_t data;
+        
+        data = uart_read_byte();
+        uart_write_byte(data + 1); /* Echo received byte back */
     }
   }
 

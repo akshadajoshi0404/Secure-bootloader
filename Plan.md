@@ -49,3 +49,6 @@ Summary: The issue was that git submodule update --remote --merge moved the subm
 
 I also added a build_libopencm3 task to your tasks.json so you can rebuild it from VS Code in the future without needing to manually set the PATH each time.
 //////////////////////////////////////
+
+
+
