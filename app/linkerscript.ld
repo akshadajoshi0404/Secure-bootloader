@@ -35,6 +35,7 @@ ENTRY(reset_handler)
 SECTIONS
 {
 	.text : {
+		KEEP (*(.bootloader_section))    /*AJ - include bootloader in firmware.c in first place*/
 		*(.vectors)	/* Vector table */
 		*(.text*)	/* Program code */
 		. = ALIGN(4);

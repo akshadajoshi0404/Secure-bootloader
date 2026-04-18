@@ -2,9 +2,19 @@
 #include <libopencm3/stm32/gpio.h>
 #include "core/system.h"
 #include "core/timer.h"
+#include "libopencm3/cm3/scb.h" /*System control block 1. Register Definitions (Memory-Mapped I/O) 
+The header defines memory-mapped registers (MMIO32) for the SCB, enabling control over the processor core: Vector Table and many more*/
+
+#define BOOTLOADR_SIZE 0x8000 /* 32 KB bootloader size */
 
 #define LED_PORT (GPIOA)
 #define LED_PIN  (GPIO5)
+
+
+static void vector_setup(void) {
+  /* Set the vector table base address to the start of the bootloader */
+  SCB_VTOR = BOOTLOADR_SIZE; /* Set the Vector Table Offset Register (VTOR) to the start of the bootloader */
+}
 
 static void gpio_setup(void) {
   rcc_periph_clock_enable(RCC_GPIOA);
@@ -27,6 +37,7 @@ static void gpio_setup(void) {
 
 
 int main(void) {
+  vector_setup(); /* Set the vector table base address to the start of the bootloader */
   system_setup();
   gpio_setup();
   timer_setup();
