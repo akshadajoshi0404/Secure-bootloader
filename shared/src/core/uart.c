@@ -21,15 +21,13 @@
  * Consider replacing with a ring buffer (circular buffer) of e.g. 64 or 128
  * bytes. That way the ISR enqueues bytes and the main loop dequeues at its
  * own pace without data loss. */
-static uint8_t data_buffer = 0;
 
-/* SUGGESTION: Both data_buffer and data_available are shared between the ISR
- * and main context. They should be declared 'volatile' to prevent the compiler
- * from optimizing away re-reads in the main loop.
- * Without volatile, a loop like:
- *     while (!data_available) { }   // compiler may read once and loop forever
- * can be broken by the optimizer caching the value in a register. */
-static  bool data_available = false;
+/* 'volatile' tells the compiler: "this variable can change at any time
+ * (e.g. from an ISR), do NOT cache it in a register — always read from RAM."
+ * Remove volatile and recompile at -O2 to see the busy-wait loop in
+ * firmware.c hang forever. */
+static uint8_t data_buffer = 0;
+static bool data_available = false;
 
 /* USART2 Interrupt Service Routine
  * Called by the NVIC whenever USART2 has a pending event (RXNE or ORE).

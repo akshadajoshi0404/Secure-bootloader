@@ -44,6 +44,41 @@ int main(void) {
   timer_setup();
   uart_setup();
 
+  /* -----------------------------------------------------------------------
+   * VOLATILE EXPERIMENT
+   *
+   * TEST A (Without volatile — compile with -O2, no volatile on data_available):
+   *   The compiler sees that data_available is never written inside this loop,
+   *   so it reads it ONCE into a register and reuses that value forever.
+   *   Result: infinite loop even when you press a key in PuTTY.
+   *
+   * TEST B (With volatile):
+   *   The compiler is forced to re-read data_available from RAM every iteration.
+   *   The ISR writes to it in RAM, so the loop exits when you press a key.
+   *   Result: loop exits, board prints "OK: data received!" and continues.
+   *
+   * TEST C (Watch it in the disassembly):
+   *   See "How to read the assembly" section below.
+   *
+   * HOW TO RUN:
+   *   1. Flash and open PuTTY at 115200 baud on the ST-LINK COM port.
+   *   2. You will see "Waiting for keypress..." printed.
+   *   3. Press any key.
+   *   4. WITHOUT volatile: nothing happens, board is stuck.
+   *      WITH volatile:    board prints "OK: data received!" and LED starts fading.
+   * ----------------------------------------------------------------------- */
+  uart_write((uint8_t*)"Waiting for keypress...\r\n", 25);
+
+  /* BUSY-WAIT: Spin here until the ISR sets data_available = true.
+   * At -O2 WITHOUT volatile, the compiler transforms this into:
+   *     if (!data_available) { while(1) {} }   // checks ONCE, then infinite loop
+   * With volatile, it becomes:
+   *     while (true) { if (data_available) break; }  // checks every iteration */
+  while (!uart_data_available()) { /* spin */ }
+
+  uart_write((uint8_t*)"OK: data received!\r\n", 20);
+  /* End of experiment — normal program continues below */
+
   float duty_cycle = 0.0f;
   timer_pwm_set_duty_cycle(duty_cycle); /* Set initial duty cycle to 0% */
   uint64_t last_tick = system_get_ticks();
