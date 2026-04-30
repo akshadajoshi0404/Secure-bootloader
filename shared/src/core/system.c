@@ -25,8 +25,8 @@ void system_setup(void) {
   systick_setup();
 }
 
-#if 0 /*this function creates busy-wait delay*/
-static void delay_cycles(uint32_t cycles) { /*Using this function was consuming CPU cycles alternate is doing it with systick - pheriphersl will time keeping and CPU is free */
+#if 1 /*this function creates busy-wait delay*/ 
+void delay_cycles(uint32_t cycles) { /*Using this function was consuming CPU cycles alternate is doing it with systick - pheriphersl will time keeping and CPU is free */
   for (uint32_t i = 0; i < cycles; i++) {
     __asm__("nop");
   }

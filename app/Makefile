@@ -49,7 +49,7 @@ OBJCOPY		:= $(PREFIX)objcopy
 OBJDUMP		:= $(PREFIX)objdump
 GDB		:= $(PREFIX)gdb
 STFLASH		= $(shell which st-flash)
-OPT		:=  -O2		#-Os
+OPT		:=  -Os
 DEBUG		:= -ggdb3
 CSTD		?= -std=c99
 
@@ -62,6 +62,8 @@ OBJS		+= $(SHARED_SRC_DIR)/core/system.o
 OBJS		+= $(SRC_DIR)/timer.o
 OBJS		+= $(SRC_DIR)/bootloader.o
 OBJS		+= $(SHARED_SRC_DIR)/core/uart.o
+OBJS		+= $(SHARED_SRC_DIR)/core/ring-buffer.o
+
 
 ###############################################################################
 # C flags

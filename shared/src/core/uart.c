@@ -4,8 +4,10 @@
 #include <libopencm3/stm32/gpio.h>
 
 #include "core/uart.h"
+#include "core/ring-buffer.h"
 
 #define BAUD_RATE 115200
+#define UART_BUFFER_SIZE 128 //for max of ~10msec between reads at 115200 baud 
 
 /* Nucleo-F446RE: PA2 = USART2_TX, PA3 = USART2_RX
  * These are wired to the ST-LINK VCP internally (solder bridges SB13/SB14).
@@ -26,8 +28,13 @@
  * (e.g. from an ISR), do NOT cache it in a register — always read from RAM."
  * Remove volatile and recompile at -O2 to see the busy-wait loop in
  * firmware.c hang forever. */
+#if 0
 static uint8_t data_buffer = 0;
 static bool data_available = false;
+#else
+static ring_buffer_t rx_ring_buffer;
+static uint8_t rx_buffer[UART_BUFFER_SIZE] = {0};
+#endif 
 
 /* USART2 Interrupt Service Routine
  * Called by the NVIC whenever USART2 has a pending event (RXNE or ORE).
@@ -48,8 +55,15 @@ void usart2_isr(void)
     {
         /* usart_recv() reads the DR register, which clears both RXNE and ORE.
          * We MUST read DR even on overrun, otherwise the interrupt keeps firing. */
-        data_buffer = (uint8_t)usart_recv(USART2);
+        #if 0
+         data_buffer = (uint8_t)usart_recv(USART2);
         data_available = true;
+        #else
+        if(ring_buffer_write(&rx_ring_buffer,(uint8_t)usart_recv(USART2)) == false)
+        {
+            /* Buffer is full, byte is lost. */
+        }
+        #endif
     }
 
     /* SUGGESTION: Consider tracking overrun events separately (e.g. increment
@@ -62,6 +76,7 @@ void usart2_isr(void)
 
 void uart_setup(void)
 {
+    ring_buffer_setup(&rx_ring_buffer, rx_buffer,UART_BUFFER_SIZE);
     /* Step 1: Enable the USART2 peripheral clock.
      * The APB1 bus clock feeds USART2 on the F446RE.
      * GPIO clock for GPIOA must ALSO be enabled (assumed done elsewhere,
@@ -140,6 +155,7 @@ void uart_write_byte(uint8_t data)
  * reading multi-byte messages. */
 uint32_t uart_read(uint8_t* data, const uint32_t length)
 {
+    #if 0
     if (length > 0 && data_available)
     {
         *data = data_buffer;
@@ -147,20 +163,45 @@ uint32_t uart_read(uint8_t* data, const uint32_t length)
         return 1;
     }
     return 0;
+    #endif 
+    if(length == 0)
+    {
+        return 0;
+    }
+    for(uint32_t byte_read=0; byte_read < length; byte_read++)
+    {
+        if(ring_buffer_read(&rx_ring_buffer, &data[byte_read]) == false)
+        {
+            /* Buffer is empty, no more bytes to read. */
+            return byte_read;
+        }
+    }
+    return length;
+
 }
 
 /* Read the last received byte directly (non-blocking).
  * Caller should check uart_data_available() first. */
 uint8_t uart_read_byte(void)
 {
+    /* SUGGESTION: This API is not very useful since it can only return the
+     * last received byte, and if multiple bytes arrive before the main loop
+     * reads them, all but the last are lost. With a ring buffer, this could
+     * be implemented to read one byte from the buffer without removing it,
+     * allowing the caller to peek at the next byte without consuming it. */
+    #if 0
     data_available = false;
     return data_buffer;
+    #endif
+    uint8_t byte = 0;
+    (void) uart_read(&byte, 1);
+    return byte;
 }
 
 /* Returns true if the ISR has received a byte that hasn't been consumed yet. */
 bool uart_data_available(void)
 {
-    return data_available;
+    return !ring_buffer_is_empty(&rx_ring_buffer);
 }
 
 

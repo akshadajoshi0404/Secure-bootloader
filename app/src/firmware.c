@@ -44,6 +44,7 @@ int main(void) {
   timer_setup();
   uart_setup();
 
+#if 0 
   /* -----------------------------------------------------------------------
    * VOLATILE EXPERIMENT
    *
@@ -78,6 +79,7 @@ int main(void) {
 
   uart_write((uint8_t*)"OK: data received!\r\n", 20);
   /* End of experiment — normal program continues below */
+#endif 
 
   float duty_cycle = 0.0f;
   timer_pwm_set_duty_cycle(duty_cycle); /* Set initial duty cycle to 0% */
@@ -95,7 +97,7 @@ int main(void) {
      // gpio_toggle(LED_PORT, LED_PIN);
     }
 
-    if(uart_data_available())
+    while(uart_data_available())
     {
         uint8_t data;
         
@@ -103,7 +105,6 @@ int main(void) {
         uart_write_byte(data + 1); /* Echo received byte back */
     }
   }
-
   // Never return
   return 0;
 }
