@@ -11,5 +11,6 @@
 
 void system_setup(void);
 uint64_t system_get_ticks(void);
+void delay_cycles(uint32_t cycles);
 
 #endif // SYSTEM_H
