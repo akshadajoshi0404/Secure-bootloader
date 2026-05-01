@@ -5,7 +5,8 @@
             "includePath": [
                 "${workspaceFolder}/app/inc",
                 "${workspaceFolder}/libopencm3/include",
-                "${workspaceFolder}/shared/inc"
+                "${workspaceFolder}/shared/inc",
+                "${workspaceFolder}/bootloader/inc"
             ],
             "defines": [
                 "STM32F4"

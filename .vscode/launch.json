@@ -20,6 +20,36 @@
       "preLaunchTask": "build_debug"
     },
     {
+      "name": "ST-Link: Debug Bootloader",
+      "cwd": "${workspaceFolder}/bootloader",
+      "executable": "./bootloader.elf",
+      "servertype": "openocd",
+      "request": "launch",
+      "type": "cortex-debug",
+      "device": "STM32F446RE",
+      "runToEntryPoint": "main",
+      "interface": "swd",
+      "serverpath": "C:/msys64/ucrt64/bin/openocd.exe",
+      "configFiles": [
+        "interface/stlink.cfg",
+        "target/stm32f4x.cfg"
+      ],
+      "armToolchainPath": "C:/msys64/ucrt64/bin",
+      "gdbPath": "C:/msys64/ucrt64/bin/gdb-multiarch.exe",
+      "preLaunchTask": "build_debug"
+    },
+    {
+      "name": "ST-Link: Attach to Bootloader",
+      "cwd": "${workspaceFolder}/bootloader",
+      "executable": "./bootloader.elf",
+      "servertype": "openocd",
+      "request": "attach",
+      "type": "cortex-debug",
+      "device": "STM32F446RE",
+      "runToEntryPoint": "main",
+      "interface": "swd"
+    },
+    {
       "name": "Attach to active",
       "cwd": "${workspaceFolder}/app",
       "executable": "./firmware.elf",
