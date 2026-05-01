@@ -1,11 +1,35 @@
+#include <libopencm3/stm32/rcc.h>
+#include <libopencm3/stm32/gpio.h>
+#include <libopencm3/cm3/vector.h>
 #include "common-defines.h"
 #include <libopencm3/stm32/memorymap.h>
+
+#include "core/uart.h"
+#include "core/system.h"
+#include "comms.h"
 
 #define BOOTLOADER_SIZE (0x8000U) /* 32 KB */
 #define BOOTLOADER_START (0x08000000U) /* Start of flash memory*/
 #define MAIN_APPL_START_ADDR (FLASH_BASE + BOOTLOADER_SIZE) /* Start address of main application */
 
+#define UART_PORT (GPIOA)
+#define RX_PIN    (GPIO3)
+#define TX_PIN    (GPIO2)
+
 //const uint8_t data[0x8000U] = {0};
+
+static void gpio_setup(void)
+{
+  /* Enable GPIOA clock */
+  rcc_periph_clock_enable(RCC_GPIOA);
+
+  /* Set TX pin as output and RX pin as input */
+  gpio_mode_setup(UART_PORT, GPIO_MODE_AF, GPIO_PUPD_NONE, TX_PIN);
+  gpio_mode_setup(UART_PORT, GPIO_MODE_AF, GPIO_PUPD_NONE, RX_PIN);
+
+  /* Set alternate function for UART pins (AF7 for USART2) */
+  gpio_set_af(UART_PORT, GPIO_AF7, TX_PIN | RX_PIN);
+}
 
 static void jump_to_main_app(void)
 {
@@ -33,6 +57,29 @@ int main(void) {
     x += data[i]; /*should fail compilation if bootloader exceeds 32kb */
   }
   #endif 
+  system_setup(); /* Set up system clock and peripherals if needed */
+  gpio_setup(); /* Set up GPIOs for UART communication if needed */
+  uart_setup(); /* Set up the ART accelerator for flash access if needed */
+  comms_setup(); /* Set up communication interfaces (e.g., UART) if needed */
+  
+  //1 Testing 
+  comms_packet_t packet =
+  {
+    .length = 10,
+    .data = {0x0A,0x0B,0x0C,0x0D,0x0E,0x0F,0x07,0x08,0x09,0x10, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
+    .crc = 0
+  };
+  packet.crc = comms_calculate_crc(&packet); /* Compute CRC for the packet data */
+  packet.crc++; /* Intentionally corrupt CRC for testing */
+
+  while(true)
+  {
+    comms_update(); /* Update communication state machine to handle incoming packets */
+    comms_send_packet(&packet); /* Send the packet over the communication interface */
+    delay_cycles(500); /* Simulate some delay for testing purposes */
+  }
+  
+  //ToDo : Teardown peripherals and system before jumping to main app
 
   jump_to_main_app(); /* Jump to the main application */
   // Never return

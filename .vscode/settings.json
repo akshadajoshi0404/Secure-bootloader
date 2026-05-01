@@ -13,5 +13,6 @@
     "flash_common_all.h": "c"
   },
   "clangd.enabled": false,
-  "C_Cpp.intelliSenseEngine": "default"
+  "C_Cpp.intelliSenseEngine": "default",
+  "cortex-debug.variableUseNaturalFormat": true
 }
