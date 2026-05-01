@@ -1,0 +1,199 @@
+
+#include "comms.h"
+//#include "assert.h" //not in libopencm3
+#include "core/uart.h"
+#include "core/crc8.h"
+
+#define PACKET_BUFFER_LENGTH (8) // Must be a power of 2 for efficient masking
+
+typedef enum comms_state
+{
+    COMMS_STATE_LENGTH,
+    COMMS_STATE_DATA,
+    COMMS_STATE_CRC,
+} comms_state_t;
+
+static comms_state_t current_state = COMMS_STATE_LENGTH;
+static uint8_t data_byte_count =0;
+static comms_packet_t current_temp_packet = {
+    .length = 0,
+    .data = {0},
+    .crc = 0
+};
+
+static comms_packet_t retx_packet = {
+    .length = 0,
+    .data = {0},
+    .crc = 0
+};
+
+static comms_packet_t ack_packet = {
+    .length = 0,
+    .data = {0},
+    .crc = 0
+};
+
+static comms_packet_t last_transmitted_packet = 
+{
+    .length = 0,
+    .data = {0},
+    .crc = 0
+};
+
+/*Ring buffer for incoming packets*/
+static comms_packet_t incoming_packet_buffer[PACKET_BUFFER_LENGTH]; // Buffer for 8 packets
+static uint8_t packet_read_index = 0; // Points to the next read position
+static uint8_t packet_write_index = 0; // Points to the next write position
+static uint32_t packet_buffer_mask = PACKET_BUFFER_LENGTH - 1;
+
+bool comms_is_single_byte_packet(const comms_packet_t* packet, uint8_t byte) {
+  if (packet->length != 1) {
+    return false;
+  }
+
+  if (packet->data[0] != byte) {
+    return false;
+  }
+
+  for (uint8_t i = 1; i < PACKET_DATA_LENGTH; i++) {
+    if (packet->data[i] != 0xff) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+static void comms_packet_copy(const comms_packet_t* source,comms_packet_t* destination)
+{
+    destination->length = source->length;
+    for(uint8_t i = 0; i < PACKET_DATA_LENGTH; i++)
+    {
+        destination->data[i] = source->data[i];
+    }
+    destination->crc = source->crc;
+}
+
+void comms_setup(void)
+{
+    retx_packet.length = 1;
+    retx_packet.data[0] = PACKET_RETX_DATA0; // Example data for retransmission packet
+    for(uint8_t i = 1; i < PACKET_DATA_LENGTH; i++)
+    {
+        retx_packet.data[i] = 0xFF; // Initialize data to 0xFF
+    }
+    retx_packet.crc = comms_calculate_crc(&retx_packet);
+
+
+    ack_packet.length = 1;
+    ack_packet.data[0] = PACKET_ACK_DATA0; // Example data for acknowledgment packet
+    for(uint8_t i = 1; i < PACKET_DATA_LENGTH; i++)
+    {
+        ack_packet.data[i] = 0xFF; // Initialize data to 0xFF
+    }
+    ack_packet.crc = comms_calculate_crc(&ack_packet);
+}
+
+
+/*State machine for communication handling*/
+void comms_update(void)
+{
+    while(uart_data_available())
+    {
+        switch(current_state)
+        {
+            case COMMS_STATE_LENGTH:
+            {
+                // Read length byte and transition to data state
+                current_temp_packet.length = uart_read_byte(); // Assuming a function to read a byte from UART
+                current_state = COMMS_STATE_DATA;
+                break;
+            }
+            case COMMS_STATE_DATA:
+            {
+                // Read data bytes until length is reached, then transition to CRC state
+                current_temp_packet.data[data_byte_count++] = uart_read_byte();
+                if (data_byte_count >= PACKET_DATA_LENGTH)
+                {
+                    data_byte_count = 0; // Reset for next packet
+                    current_state = COMMS_STATE_CRC;
+                }
+                break;
+            }
+            case COMMS_STATE_CRC:
+            {    // Read CRC byte, validate packet, and transition back to length state
+                current_temp_packet.crc = uart_read_byte();
+                uint8_t computed_crc = comms_calculate_crc(&current_temp_packet);
+                if (computed_crc == current_temp_packet.crc)
+                {
+                    // Packet is valid, process it
+                    if(comms_is_single_byte_packet(&current_temp_packet, PACKET_RETX_DATA0))
+                    {
+                        // Handle retransmission packet
+                        // For example, you might want to resend the last valid packet
+                        comms_send_packet(&last_transmitted_packet); // Send acknowledgment for retransmission packet
+                        current_state = COMMS_STATE_LENGTH;
+                        break;
+                    }
+                    else if(comms_is_single_byte_packet(&current_temp_packet, PACKET_ACK_DATA0))
+                    {
+                        // Handle acknowledgment packet
+                        // For example, you might want to mark the last sent packet as acknowledged
+                        current_state = COMMS_STATE_LENGTH;
+                        break;
+                    }
+                    else
+                    {
+                        uint32_t next_write_index = (packet_write_index + 1) & packet_buffer_mask;
+                        if(next_write_index == packet_read_index)
+                        {
+                            __asm__("BKPT #0"); // Buffer overflow, should never happen if we read packets in time
+                        } // Ensure we don't overwrite unread packets
+                        comms_packet_copy(&current_temp_packet, &incoming_packet_buffer[packet_write_index]); // Store packet in ring buffer
+                        packet_write_index = next_write_index;
+                        comms_send_packet(&ack_packet); // Send acknowledgment for valid packet
+                        current_state = COMMS_STATE_LENGTH;
+                        break;
+                    }
+                }
+                else
+                {
+                    // Packet is invalid, handle error
+                    comms_send_packet(&retx_packet); // Send retransmission packet
+                    current_state = COMMS_STATE_LENGTH;
+                    break;
+                }
+
+            }
+        }
+        // Read incoming data and process it according to the current state
+    }
+
+}
+
+bool comms_packet_available(void)
+{
+    return packet_read_index != packet_write_index; // Check if there are packets in the buffer
+}
+
+void comms_send_packet(const comms_packet_t* packet)
+{
+    uart_write((uint8_t*)packet, PACKET_TOTAL_LENGTH); // Assuming a function to write bytes to UART
+    comms_packet_copy(packet, &last_transmitted_packet); // Store the last transmitted packet
+}
+
+void comms_receive_packet(comms_packet_t* packet)
+{
+    if(comms_packet_available()==0)
+    {
+        __asm__("BKPT #0"); // No packet available, should never happen if caller checks availability          
+    } // Ensure there is a packet to read
+    comms_packet_copy(&incoming_packet_buffer[packet_read_index], packet); // Copy packet from buffer to output
+    packet_read_index = (packet_read_index + 1) & packet_buffer_mask; // Move read index forward
+}
+
+/*API for calculating CRC*/
+uint8_t comms_calculate_crc(const comms_packet_t* packet)
+{
+    return crc8_compute((uint8_t*)packet, PACKET_TOTAL_LENGTH - PACKET_CRC_BYTE);
+}
