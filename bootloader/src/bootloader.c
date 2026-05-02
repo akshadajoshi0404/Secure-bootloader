@@ -7,6 +7,7 @@
 #include "core/uart.h"
 #include "core/system.h"
 #include "comms.h"
+#include "bl-flash.h"
 
 #define BOOTLOADER_SIZE (0x8000U) /* 32 KB */
 #define BOOTLOADER_START (0x08000000U) /* Start of flash memory*/
@@ -45,6 +46,8 @@ static void jump_to_main_app(void)
 
 
 int main(void) {
+
+  #if 0 
   /* In a real bootloader, you would typically perform tasks such as:
      - Checking for a valid application in the main application area
      - Verifying the integrity of the application (e.g., using checksums or signatures)
@@ -71,12 +74,29 @@ int main(void) {
   };
   packet.crc = comms_calculate_crc(&packet); /* Compute CRC for the packet data */
   packet.crc++; /* Intentionally corrupt CRC for testing */
+  #endif
 
+  system_setup();
+  uint8_t data[1024] = {0}; /* Example data to write to flash, in a real scenario this would come from the communication interface */
+  for(uint16_t i = 0; i < sizeof(data); i++)
+    data[i] = i & 0xff; /* Fill data with some pattern for testing */
+
+  bl_flash_erase_main_application(); /* Erase the flash memory area for the main application */
+  bl_flash_write( 0x08008000, data, sizeof(data)); /* Write the example data to the main application area in flash */
+  bl_flash_write( 0x0800C000, data, sizeof(data)); /* Write the example data to the main application area in flash */
+  bl_flash_write( 0x08010000, data, sizeof(data)); /* Write the example data to the main application area in flash */
+  bl_flash_write( 0x08020000, data, sizeof(data)); /* Write the example data to the main application area in flash */
+  bl_flash_write( 0x08040000, data, sizeof(data)); /* Write the example data to the main application area in flash */
+  bl_flash_write( 0x08060000, data, sizeof(data)); /* Write the example data to the main application area in flash */
+  
+  
   while(true)
   {
+    #if 0 /*Testing Comms*/
     comms_update(); /* Update communication state machine to handle incoming packets */
     comms_send_packet(&packet); /* Send the packet over the communication interface */
     delay_cycles(500); /* Simulate some delay for testing purposes */
+    #endif
   }
   
   //ToDo : Teardown peripherals and system before jumping to main app
