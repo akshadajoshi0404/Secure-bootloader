@@ -8,6 +8,7 @@
 #include "core/system.h"
 #include "comms.h"
 #include "bl-flash.h"
+#include "core/simple-timer.h"
 
 #define BOOTLOADER_SIZE (0x8000U) /* 32 KB */
 #define BOOTLOADER_START (0x08000000U) /* Start of flash memory*/
@@ -45,8 +46,8 @@ static void jump_to_main_app(void)
 }
 
 
-int main(void) {
-
+int main(void) 
+{
   #if 0 
   /* In a real bootloader, you would typically perform tasks such as:
      - Checking for a valid application in the main application area
@@ -77,6 +78,7 @@ int main(void) {
   #endif
 
   system_setup();
+  #if 0 /*Testing Flash*/
   uint8_t data[1024] = {0}; /* Example data to write to flash, in a real scenario this would come from the communication interface */
   for(uint16_t i = 0; i < sizeof(data); i++)
     data[i] = i & 0xff; /* Fill data with some pattern for testing */
@@ -88,8 +90,13 @@ int main(void) {
   bl_flash_write( 0x08020000, data, sizeof(data)); /* Write the example data to the main application area in flash */
   bl_flash_write( 0x08040000, data, sizeof(data)); /* Write the example data to the main application area in flash */
   bl_flash_write( 0x08060000, data, sizeof(data)); /* Write the example data to the main application area in flash */
-  
-  
+  #endif
+
+  simple_timer_t timer;
+  simple_timer_t timer2;
+
+  simple_timer_init(&timer, 1000, false); /* Initialize a one-shot timer with a wait time of 1000 time units */
+  simple_timer_init(&timer2, 2000, true);
   while(true)
   {
     #if 0 /*Testing Comms*/
@@ -97,12 +104,22 @@ int main(void) {
     comms_send_packet(&packet); /* Send the packet over the communication interface */
     delay_cycles(500); /* Simulate some delay for testing purposes */
     #endif
+
+    if(simple_timer_has_elapsed(&timer)) 
+    {
+        volatile uint32_t x = 0; /* Prevent compiler optimization for testing */
+        x++ ; /* Increment x each time the timer elapses, in a real application this could be used for periodic tasks */
+    }
+
+    if(simple_timer_has_elapsed(&timer2)) 
+    {
+      simple_timer_reset(&timer); // Reset the one-shot timer when the periodic timer elapses, in a real application this could be used to trigger periodic events or tasks
+    }
+
   }
-  
-  //ToDo : Teardown peripherals and system before jumping to main app
+  /*ToDo : Teardown peripherals and system before jumping to main app */
 
   jump_to_main_app(); /* Jump to the main application */
-  // Never return
   return 0;
 }
 
