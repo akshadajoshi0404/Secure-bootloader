@@ -13,7 +13,7 @@
 #define BOOTLOADER_SIZE (0x8000U) /* 32 KB */
 #define BOOTLOADER_START (0x08000000U) /* Start of flash memory*/
 #define MAIN_APPL_START_ADDR (FLASH_BASE + BOOTLOADER_SIZE) /* Start address of main application */
-#define MAX_FW_LENGTH (256*1024 - BOOTLOADER_SIZE) /* Maximum firmware length that can be accommodated in the main application area (256 KB - 32 KB for bootloader) */
+#define MAX_FW_LENGTH ((256*1024) - BOOTLOADER_SIZE) /* Maximum firmware length that can be accommodated in the main application area (256 KB - 32 KB for bootloader) */
 
 #define UART_PORT (GPIOA)
 #define RX_PIN    (GPIO3)
@@ -200,6 +200,7 @@ int main(void)
   }
   #endif
 
+
   system_setup();
   gpio_setup();
   uart_setup();
@@ -273,7 +274,7 @@ int main(void)
       case BL_STATE_DEVICE_ID_REQ:
       {
         /* Transition to the next state to handle device ID request/response */
-        comms_create_single_byte_packet(&temp_packet, BL_PACKET_DEVICE_ID_RES_DATA0);
+        comms_create_single_byte_packet(&temp_packet, BL_PACKET_DEVICE_ID_REQ_DATA0);
         comms_send_packet(&temp_packet); /* Send a response packet indicating that the firmware update request was received, in a real application you might want to include additional information or perform other actions here */
         bootloader_state = BL_STATE_DEVICE_ID_RES; /* Transition to the next state to handle device ID request/response */
         simple_timer_reset(&timer); /* Reset the timer when the device ID request is sent to start the timeout for the next expected event (e.g., device ID response) */
@@ -317,7 +318,7 @@ int main(void)
           {
             /* Extract firmware length from the packet data, assuming it's sent in bytes 1-4 of the data array in little-endian format */
             firmware_length = (temp_packet.data[1]) | (temp_packet.data[2] << 8) | (temp_packet.data[3] << 16) | (temp_packet.data[4] << 24);
-            if(firmware_length > MAX_FW_LENGTH) /* Check if the received firmware length exceeds the maximum allowed length for the main application area, this is a safety check to prevent writing beyond the allocated flash memory */
+            if(firmware_length <= MAX_FW_LENGTH) /* Check if the received firmware length fits within the main application area, this is a safety check to prevent writing beyond the allocated flash memory */
             {
                 simple_timer_reset(&timer); /* Reset the timer when the firmware length response is received to start the timeout for the next expected event (e.g., ready for data) */
               bootloader_state = BL_STATE_ERASE_APPLICATION; /* Transition to the next state to handle erasing the application area before receiving firmware data */

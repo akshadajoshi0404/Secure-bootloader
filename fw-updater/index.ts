@@ -14,8 +14,11 @@
  *   ACK  (0x15) — sent to confirm successful receipt of a data packet
  *   RETX (0x19) — sent to request retransmission of the previous packet
  */
+import { info } from 'console';
+import { write } from 'fs';
 import {SerialPort} from 'serialport';
-
+import * as fs from "fs/promises";
+import * as path from "path";
 // ---------------------------------------------------------------------------
 // Packet protocol constants
 // ---------------------------------------------------------------------------
@@ -40,6 +43,26 @@ const PACKET_ACK_DATA0      = 0x15;
 
 /** First data byte value that identifies a RETX (retransmit) control packet. */
 const PACKET_RETX_DATA0     = 0x19;
+
+
+//Bootloader constat definations
+const BOOTLOADER_SIZE  = 0x8000; /* Size of the bootloader in bytes, used to calculate the offset for reading the firmware image from disk, in a real application you would want to ensure that this matches the actual size of your bootloader and that it is correctly aligned with the memory layout of your target device */
+const BL_PACKET_SYNC_OBSERVED_DATA0         = (0x20);
+const BL_PACKET_FW_UPDATE_REQ_DATA0         = (0x31); 
+const BL_PACKET_FW_UPDATE_RES_DATA0         = (0x37);
+const BL_PACKET_DEVICE_ID_REQ_DATA0         = (0x3C);
+const BL_PACKET_DEVICE_ID_RES_DATA0         = (0x3F);
+const BL_PACKET_FW_LENGTH_REQ_DATA0         = (0x42);
+const BL_PACKET_FW_LENGTH_RES_DATA0         = (0x45);
+const BL_PACKET_READY_FOR_DATA_DATA0        = (0x48);
+const BL_PACKET_UPDATE_SUCCESSFUL_DATA0     = (0x54);
+const BL_PACKET_NACK_DATA0                  = (0x59);
+
+
+const DEVICE_ID  = (0x42);
+const SYNC_SEQ = [0xc4, 0x55, 0x7e, 0x10];
+const DEFAULT_TIMEOUT_MS = (5000); /* Default timeout for communication operations in milliseconds, can be adjusted as needed */
+
 
 // ---------------------------------------------------------------------------
 // Serial port configuration
@@ -94,6 +117,14 @@ const crc8 = (data: Buffer | Array<number>) => {
  * @param ms - Time to wait in milliseconds.
  */
 const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+
+class Logger
+{
+  static info(message: string) {console.log(`INFO: ${message}`);}
+  static success(message: string) {console.log(`SUCCESS: ${message}`);}
+  static error(message: string) {console.error(`ERROR: ${message}`);}   
+}
 
 // ---------------------------------------------------------------------------
 // Packet class — serialisation / deserialisation
@@ -193,6 +224,11 @@ class Packet {
   isRetx() {
     return this.isSingleBytePacket(PACKET_RETX_DATA0);
   }
+
+  static createSingleBytePacket(byte: number) {
+    return new Packet(1, Buffer.from([byte]));
+  }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -270,41 +306,54 @@ const consumeFromBuffer = (n: number) => {
  *  4. Data packet    → push onto `packets` queue and send ACK.
  */
 uart.on('data', data => {
-  console.log(`Received ${data.length} bytes through uart`);
   // Append new bytes to the accumulation buffer
   rxBuffer = Buffer.concat([rxBuffer, data]);
+  console.log(`Received ${data.length} bytes | rxBuffer [${rxBuffer.length}]: ${rxBuffer.toString('hex').match(/../g)?.join(' ')}`);
 
-  // Only attempt to parse once we have at least one complete packet
-  if (rxBuffer.length >= PACKET_LENGTH) {
-    console.log(`Building a packet`);
+  // Loop: process every complete packet that has accumulated in the buffer.
+  // Using 'while' instead of 'if' is critical — if the remote side sends two
+  // packets back-to-back (e.g. ACK + READY_FOR_DATA), a single 'if' would
+  // only consume the first one, leaving stale bytes that corrupt the next
+  // incoming fragment and desynchronise the framing.
+  // How to debug this class of problem next time:
+  //Print rxBuffer as hex on every data event before parsing — you'd have seen the leftover byte count increasing between exchanges, immediately pointing to the single-packet processing bug.
+  //Log each parse attempt with full raw bytes and CRC mismatch details — a misaligned garbage frame would have shown up as a CRC failure on bytes that don't look like any expected packet.
+  //Add a running byte-offset counter — when the frame alignment is off, the first data byte of each parsed packet will be offset by the residual byte count, making the desync obvious from the log alone.
+  while (rxBuffer.length >= PACKET_LENGTH) {
     // Consume exactly PACKET_LENGTH bytes from the front of the buffer
     const raw = consumeFromBuffer(PACKET_LENGTH);
     // Deserialise: length byte, 16-byte data slice, and the wire CRC
     const packet = new Packet(raw[0], raw.slice(1, 1+PACKET_DATA_BYTES), raw[PACKET_CRC_INDEX]);
     const computedCrc = packet.computeCrc();
+    console.log(`Parsed packet | raw: ${raw.toString('hex').match(/../g)?.join(' ')} | len=0x${packet.length.toString(16)} data[0]=0x${packet.data[0].toString(16)} wireCrc=0x${packet.crc.toString(16)} computedCrc=0x${computedCrc.toString(16)}`);
 
     // CRC check — if the wire CRC doesn't match, the packet is corrupted
     if (packet.crc !== computedCrc) {
-      console.log(`CRC failed, computed 0x${computedCrc.toString(16)}, got 0x${packet.crc.toString(16)}`);
+      console.log(`CRC mismatch — sending RETX`);
       writePacket(Packet.retx); // Ask the bootloader to resend its last packet
-      return;
+      continue;
     }
 
     // RETX — the bootloader is requesting we resend our previous packet
     if (packet.isRetx()) {
-      console.log(`Retransmitting last packet`);
+      console.log(`RETX received — retransmitting last packet`);
       writePacket(lastPacket);
-      return;
+      continue;
     }
 
     // ACK — the bootloader successfully received our last packet; nothing to do
     if (packet.isAck()) {
-      console.log(`It was an ack, nothing to do`);
-      return;
+      console.log(`ACK received`);
+      continue;
+    }
+
+    if (packet.isSingleBytePacket(BL_PACKET_NACK_DATA0)) {
+      Logger.error(`Received NACK from bootloader, Exitting.  `);
+      process.exit(1);
     }
 
     // Data packet — store it in the queue and acknowledge receipt
-    console.log(`Storing packet and ack'ing`);
+    console.log(`Data packet queued (queue depth now ${packets.length + 1})`);
     packets.push(packet);
     writePacket(Packet.ack);
   }
@@ -324,24 +373,62 @@ uart.on('data', data => {
  *
  * @returns The next data packet from the receive queue.
  */
-const waitForPacket = async () => {
+const waitForPacket = async (timeout = DEFAULT_TIMEOUT_MS) => {
+  let timeWaited = 0;
   while (packets.length < 1) {
     await delay(1); // Yield to let the 'data' event handler populate the queue
+    timeWaited += 1;
+    if (timeWaited >= timeout) {
+      throw Error (`Timeout waiting for packet after ${timeout} ms`);
+    }
   }
-  const packet = packets[0];
-  packets = packets.slice(1); // Dequeue
+  const packet = packets.shift()!; // Dequeue
   return packet;
 }
 
+const waitForSingleBytePacket = async (byte: number, timeout = DEFAULT_TIMEOUT_MS) => {
+  const packet = await waitForPacket(timeout)
+  .then(packet=> {
+    if (packet.length !== 1 || packet.data[0] !== byte) {
+    const formattedPacket = [...packet.toBuffer()].map(b => b.toString(16)).join(' ');
+    throw new Error(`Received unexpected packet while waiting for single-byte packet with data[0] = 0x${byte.toString(16)}: ${formattedPacket}`);
+    }
+  })
+  .catch((e: Error) => {
+    Logger.error(e.message);
+    console.log(rxBuffer);
+    console.log(packets);
+    process.exit(1);
+  })
+};
 // Log the pre-built ACK buffer at startup for diagnostic purposes
-console.log(Packet.ack)
+//console.log(Packet.ack)
 
+const syncWithBootloader = async (timeout = DEFAULT_TIMEOUT_MS) => {
+  let timeWaited = 0;
+  while(true) {
+    uart.write(Buffer.from(SYNC_SEQ));
+    await delay(1000); // Wait a bit before sending the next sync sequence
+    timeWaited += 1000;
+    if(packets.length > 0) {
+      const packet = packets.shift()!; // Dequeue
+      if(packet.isSingleBytePacket(BL_PACKET_SYNC_OBSERVED_DATA0)) {
+        Logger.success(`Received expected sync acknowledgment: ${packet.data[0].toString(16)}`);
+        return; // Exit the loop if we receive the expected sync acknowledgment from the bootloader
+      }
+      Logger.error(`Received unexpected packet while waiting for sync: ${packet.data[0].toString(16)}`);
+      process.exit(1); // Exit with an error code if we receive an unexpected packet
+    }
+    if (timeWaited >= timeout) {
+      Logger.error(`Timeout waiting for sync acknowledgment`);
+      process.exit(1); // Exit with an error code if we timeout
+    }
+  }
+}
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
-
-
-console.log(Packet.retx);
+//console.log(Packet.retx);
 /**
  * Main async entry point.  Using an async function allows the use of `await`
  * and structured loops throughout the firmware update sequence.
@@ -353,14 +440,71 @@ console.log(Packet.retx);
  *     the retransmission path on the bootloader side.
  */
 const main = async () => {
-  console.log('Waiting for packet...');
-  const packet = await waitForPacket();
-  console.log(packet);
+
+  //console.log('Waiting for packet...');
+  //const packet = await waitForPacket();
+  //console.log(packet);
 
   // Build a test packet and corrupt its CRC to trigger a RETX response
   //const packetToSend = new Packet(4, Buffer.from([5, 6, 7, 8]));
   //packetToSend.crc++; // Intentionally corrupt CRC for testing
   //uart.write(packetToSend.toBuffer());
+
+  Logger.info("Reading the firmware Image binary from disk...");
+  const fwImage = await fs.readFile(path.join(process.cwd(), "firmware.bin"))
+   .then(bin => bin.slice(BOOTLOADER_SIZE));
+
+  const fwLength = fwImage.length;
+  Logger.success(`Firmware image read successfully, size after slicing off bootloader: ${fwLength} bytes`);
+
+  Logger.info(`Starting firmware update process, waiting for synchronizing with bootloader...`);
+  await syncWithBootloader(); // Wait for the bootloader to send its sync acknowledgment packet
+  Logger.success(`Synchronized with bootloader, ready to proceed with firmware update!`);
+
+  Logger.info(`Sending firmware update request packet...`);
+  const fwUpdateReqPacket = Packet.createSingleBytePacket(BL_PACKET_FW_UPDATE_REQ_DATA0);
+  writePacket(fwUpdateReqPacket.toBuffer());
+  await waitForSingleBytePacket(BL_PACKET_FW_UPDATE_RES_DATA0); // Wait for the bootloader to acknowledge the firmware update request
+  Logger.success(`Bootloader acknowledged firmware update request, ready to proceed with firmware update!`);
+
+  Logger.info(`Waiting for device ID request from bootloader...`);
+  await waitForSingleBytePacket(BL_PACKET_DEVICE_ID_REQ_DATA0); // Wait for the bootloader to send a device ID request packet
+  const  devIDPacket = new Packet(2, Buffer.from([BL_PACKET_DEVICE_ID_RES_DATA0, DEVICE_ID]));
+  writePacket(devIDPacket.toBuffer());
+  Logger.info(`Responding with device ID response packet with device ID 0x${DEVICE_ID.toString(16)}, waiting for firmware length request from bootloader...`);
+
+  Logger.info(`Waiting for firmware length request from bootloader...`);
+  await waitForSingleBytePacket(BL_PACKET_FW_LENGTH_REQ_DATA0); // Wait for the bootloader to send a firmware length request packet
+
+  const fwLengthPacketBuffer = Buffer.alloc(5);
+  fwLengthPacketBuffer[0] = BL_PACKET_FW_LENGTH_RES_DATA0;
+  fwLengthPacketBuffer.writeUInt32LE(fwLength, 1); // Write the firmware length as a big-endian 32-bit integer starting at index 1
+  const fwLengthPacket = new Packet(5, fwLengthPacketBuffer);
+  writePacket(fwLengthPacket.toBuffer());
+  Logger.info(`Responding with firmware length response packet with firmware length ${fwLength} bytes, waiting for ready for data packet from bootloader
+     (waiting for main application to be erased 1sec)...`);
+
+  await delay(1000); // Wait a bit to give the bootloader time to erase the main application area before we start sending data packets
+  Logger.info(`Waiting for ready for data packet from bootloader...2sec`);
+  await delay(1000); // Wait a bit to give the bootloader time to erase the main application area before we start sending data packets
+  Logger.info(`Waiting for ready for data packet from bootloader...3sec`);
+  await delay(1000); // Wait a bit to give the bootloader time to erase the main application area before we start sending data packets
+  
+  let byteWritten = 0;
+  while(byteWritten < fwLength) {
+   await waitForSingleBytePacket(BL_PACKET_READY_FOR_DATA_DATA0); // Wait for the bootloader to send a ready for data packet before sending each firmware data packet
+    const chunkSize = Math.min(PACKET_DATA_BYTES, fwLength - byteWritten);// Calculate the size of the next chunk to send, ensuring we don't exceed the firmware length
+    const dataChunk = fwImage.slice(byteWritten, byteWritten + chunkSize);
+    const dataPacket = new Packet(chunkSize-1, dataChunk);
+    writePacket(dataPacket.toBuffer());
+    Logger.info(`Sent firmware data packet with bytes ${byteWritten} to ${byteWritten + chunkSize - 1},.`);
+    byteWritten += chunkSize; 
+  }
+  await waitForSingleBytePacket(BL_PACKET_UPDATE_SUCCESSFUL_DATA0, 10000); // Wait for the bootloader to send a firmware update successful packet, with a longer timeout to account for the time it may take to write the firmware to flash 
+  Logger.success(`Firmware update completed successfully!`);
 }
 
-main();
+main().finally(() => {
+  uart.close(); // Close the serial port when the main function completes, whether it succeeded or threw an error
+});
+
