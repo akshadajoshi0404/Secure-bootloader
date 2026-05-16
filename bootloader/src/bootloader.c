@@ -368,6 +368,11 @@ int main(void)
               comms_send_packet(&temp_packet); /* Send a packet indicating that the firmware update was successful, in a real application you might want to include additional information or perform other actions here */
               bootloader_state = BL_STATE_DONE; /* Transition to DONE state after successfully receiving and writing all firmware data */
             }
+            else
+            {
+              comms_create_single_byte_packet(&temp_packet, BL_PACKET_READY_FOR_DATA_DATA0);
+              comms_send_packet(&temp_packet); /* Send an acknowledgment packet for the received firmware data packet, in a real application you might want to include additional information or perform other actions here */
+            }
           }
           else
           {
