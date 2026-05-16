@@ -1,4 +1,4 @@
-
+#include <string.h>
 #include "comms.h"
 //#include "assert.h" //not in libopencm3
 #include "core/uart.h"
@@ -64,6 +64,15 @@ bool comms_is_single_byte_packet(const comms_packet_t* packet, uint8_t byte) {
   return true;
 }
 
+void comms_create_single_byte_packet(comms_packet_t* packet, uint8_t byte)
+{
+    memset(packet, 0xFF, sizeof(comms_packet_t));
+    packet->length = 1;
+    packet->data[0] = byte;
+    packet->crc = comms_calculate_crc(packet);
+}
+
+#if 0 /* replaced this function with memcpy */
 static void comms_packet_copy(const comms_packet_t* source,comms_packet_t* destination)
 {
     destination->length = source->length;
@@ -73,9 +82,11 @@ static void comms_packet_copy(const comms_packet_t* source,comms_packet_t* desti
     }
     destination->crc = source->crc;
 }
+#endif
 
 void comms_setup(void)
 {
+    #if 0 
     retx_packet.length = 1;
     retx_packet.data[0] = PACKET_RETX_DATA0; // Example data for retransmission packet
     for(uint8_t i = 1; i < PACKET_DATA_LENGTH; i++)
@@ -92,6 +103,9 @@ void comms_setup(void)
         ack_packet.data[i] = 0xFF; // Initialize data to 0xFF
     }
     ack_packet.crc = comms_calculate_crc(&ack_packet);
+    #endif
+    comms_create_single_byte_packet(&retx_packet, PACKET_RETX_DATA0);
+    comms_create_single_byte_packet(&ack_packet, PACKET_ACK_DATA0);
 }
 
 
@@ -149,7 +163,8 @@ void comms_update(void)
                         {
                             __asm__("BKPT #0"); // Buffer overflow, should never happen if we read packets in time
                         } // Ensure we don't overwrite unread packets
-                        comms_packet_copy(&current_temp_packet, &incoming_packet_buffer[packet_write_index]); // Store packet in ring buffer
+                        //comms_packet_copy(&current_temp_packet, &incoming_packet_buffer[packet_write_index]); // Store packet in ring buffer
+                        memcpy(&incoming_packet_buffer[packet_write_index], &current_temp_packet, sizeof(comms_packet_t)); // Store packet in ring buffer
                         packet_write_index = next_write_index;
                         comms_send_packet(&ack_packet); // Send acknowledgment for valid packet
                         current_state = COMMS_STATE_LENGTH;
@@ -179,7 +194,8 @@ bool comms_packet_available(void)
 void comms_send_packet(const comms_packet_t* packet)
 {
     uart_write((uint8_t*)packet, PACKET_TOTAL_LENGTH); // Assuming a function to write bytes to UART
-    comms_packet_copy(packet, &last_transmitted_packet); // Store the last transmitted packet
+    //comms_packet_copy(packet, &last_transmitted_packet); // Store the last transmitted packet
+     memcpy(&last_transmitted_packet, packet, sizeof(comms_packet_t)); // Store the last transmitted packet  
 }
 
 void comms_receive_packet(comms_packet_t* packet)
@@ -188,7 +204,8 @@ void comms_receive_packet(comms_packet_t* packet)
     {
         __asm__("BKPT #0"); // No packet available, should never happen if caller checks availability          
     } // Ensure there is a packet to read
-    comms_packet_copy(&incoming_packet_buffer[packet_read_index], packet); // Copy packet from buffer to output
+    //comms_packet_copy(&incoming_packet_buffer[packet_read_index], packet); // Copy packet from buffer to output
+    memcpy(packet, &incoming_packet_buffer[packet_read_index], sizeof(comms_packet_t)); // Copy packet from buffer to output
     packet_read_index = (packet_read_index + 1) & packet_buffer_mask; // Move read index forward
 }
 
