@@ -125,6 +125,15 @@ void uart_setup(void)
     usart_enable(USART2);
 }
 
+void uart_teardown(void)
+{
+    usart_disable_rx_interrupt(USART2); /* Disable USART2 RX interrupt to prevent ISR from firing after we've disabled the peripheral */
+    usart_disable(USART2); /* Disable USART2 peripheral */
+    nvic_disable_irq(NVIC_USART2_IRQ); /* Disable USART2 interrupt in NVIC to prevent it from firing after we've disabled the peripheral */
+    rcc_periph_clock_disable(RCC_USART2); /* Disable USART2 peripheral clock to save power */
+    /* Note: In a real application, you would want to ensure that the system is in*/
+}
+
 /* Transmit a buffer of bytes, blocking until all are sent. */
 void uart_write(uint8_t* data, const uint32_t length)
 {

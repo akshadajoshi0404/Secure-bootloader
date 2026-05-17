@@ -14,5 +14,5 @@
   },
   "clangd.enabled": false,
   "C_Cpp.intelliSenseEngine": "default",
-  "cortex-debug.variableUseNaturalFormat": true
+  "cortex-debug.variableUseNaturalFormat": false
 }

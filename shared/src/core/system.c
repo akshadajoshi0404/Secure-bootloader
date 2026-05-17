@@ -25,6 +25,14 @@ void system_setup(void) {
   systick_setup();
 }
 
+void system_teardown(void) {
+  /* In a real application, you would typically disable peripherals, interrupts, and perform any necessary cleanup before jumping to the main application. For this example, we will leave this function empty. */
+  systick_interrupt_disable(); /* Disable systick interrupt */
+  systick_counter_disable(); /* Stop the systick counter */ 
+  systick_clear(); /* Clear systick counter and interrupt flag */
+  /* You might also want to disable other peripherals or interrupts here as needed */
+}
+
 #if 1 /*this function creates busy-wait delay*/ 
 void delay_cycles(uint32_t cycles) { /*Using this function was consuming CPU cycles alternate is doing it with systick - pheriphersl will time keeping and CPU is free */
   for (uint32_t i = 0; i < cycles; i++) {
