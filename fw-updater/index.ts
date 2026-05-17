@@ -46,7 +46,17 @@ const PACKET_RETX_DATA0     = 0x19;
 
 
 //Bootloader constat definations
-const BOOTLOADER_SIZE  = 0x8000; /* Size of the bootloader in bytes, used to calculate the offset for reading the firmware image from disk, in a real application you would want to ensure that this matches the actual size of your bootloader and that it is correctly aligned with the memory layout of your target device */
+const BOOTLOADER_SIZE                = 0x8000; /* Size of the bootloader in bytes, used to calculate the offset for reading the firmware image from disk, in a real application you would want to ensure that this matches the actual size of your bootloader and that it is correctly aligned with the memory layout of your target device */
+const VECTOR_TABLE_SIZE              = (0x1AC); /* Size of the vector table in bytes, used to calculate the offset for the firmware info structure and the firmware image in flash memory, in a real application you would want to ensure that this matches the actual size of your vector table and that it is correctly aligned with the memory layout of your target device */
+const FWINFO_SIZE                    = (9*4); /* Size of the firmware info structure in bytes (9 x uint32_t: sentinel, device_id, firmware_version, length, reserved[4], CRC32) */   
+
+const FWINFO_VALIDATE_FROM           = (VECTOR_TABLE_SIZE + FWINFO_SIZE);
+const FWINFO_DEVICE_ID_OFFSET        = (VECTOR_TABLE_SIZE + (1*4)); /* Offset from the start of the firmware info structure to where the device ID is stored in flash memory, used to calculate the absolute address of the device ID in flash memory, in a real application you would want to ensure that this offset correctly accounts for the size of your firmware info structure and any padding or alignment requirements */
+const FWINFO_VERSION_OFFSET          = (VECTOR_TABLE_SIZE + (2*4)); /* Offset from the start of the firmware info structure to where the firmware version is stored in flash memory, used to calculate the absolute address of the firmware version in flash memory, in a real application you would want to ensure that this offset correctly accounts for the size of your firmware info structure and any padding or alignment requirements */
+const FWINFO_LENGTH_OFFSET           = (VECTOR_TABLE_SIZE + (3*4)); /* Offset from the start of the firmware info structure to where the firmware length is stored in flash memory, used to calculate the absolute address of the firmware length in flash memory, in a real application you would want to ensure that this offset correctly accounts for the size of your firmware info structure and any padding or alignment requirements */
+const FWINFO_CRC32_OFFSET            = (VECTOR_TABLE_SIZE + (8*4)); /* CRC32 is the 9th field (0-indexed: 8) of firmware_info_t, at byte offset 32 from the start of the struct */
+
+
 const BL_PACKET_SYNC_OBSERVED_DATA0         = (0x20);
 const BL_PACKET_FW_UPDATE_REQ_DATA0         = (0x31); 
 const BL_PACKET_FW_UPDATE_RES_DATA0         = (0x37);
@@ -107,6 +117,37 @@ const crc8 = (data: Buffer | Array<number>) => {
   }
 
   return crc;
+};
+
+// ---------------------------------------------------------------------------
+// CRC-32 (polynomial 0x04C11DB7, reflected 0xEDB88320, initial value 0xFFFFFFFF)
+// ---------------------------------------------------------------------------
+
+/**
+ * Computes a CRC-32 checksum over the supplied byte sequence.
+ *
+ * Algorithm: CRC-32/ISO-HDLC (also known as plain CRC-32) — reflected
+ * polynomial 0xEDB88320, initial value 0xFFFFFFFF, final XOR 0xFFFFFFFF.
+ * This matches the STM32 hardware CRC peripheral configuration used by the
+ * embedded bootloader to validate the firmware image.
+ *
+ * @param data - Raw bytes to checksum (Buffer or plain number array).
+ * @returns Unsigned 32-bit CRC value.
+ */
+const crc32 = (data: Buffer , length: number) => {
+  let byte;
+  let crc = 0xFFFFFFFF;
+  let mask;
+
+  for (let i = 0; i < length; i++) {
+    byte = data[i];
+    crc = (crc ^ byte) >>> 0;
+    for (let j = 0; j < 8; j++) {
+      mask = (-(crc & 1)) >>> 0;
+      crc = ((crc >>> 1) ^ (0xEDB88320 & mask)) >>> 0;
+    }
+  }
+  return (~crc) >>> 0;
 };
 
 /**
@@ -240,6 +281,7 @@ class Packet {
  * The port is opened automatically on construction.
  */
 const uart = new SerialPort({ path: serialPath, baudRate });
+uart.on('error', (err) => { console.error(`[UART error ignored]: ${err.message}`); });
 
 /**
  * Queue of fully-received, CRC-verified data packets waiting to be consumed
@@ -425,6 +467,8 @@ const syncWithBootloader = async (timeout = DEFAULT_TIMEOUT_MS) => {
     }
   }
 }
+
+
 // ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
@@ -457,6 +501,16 @@ const main = async () => {
   const fwLength = fwImage.length;
   Logger.success(`Firmware image read successfully, size after slicing off bootloader: ${fwLength} bytes`);
 
+  Logger.info("Injecting into firmware information section in flash memory...");
+  fwImage.writeUInt32LE(fwLength, FWINFO_LENGTH_OFFSET); // Write the sentinel value at the correct offset in the firmware image
+  fwImage.writeUInt32LE(0x00010000, FWINFO_VERSION_OFFSET); // Write the sentinel value at the correct offset in the firmware image
+  const crcValue = crc32(fwImage.slice(FWINFO_VALIDATE_FROM),fwLength-(VECTOR_TABLE_SIZE + FWINFO_SIZE)); // Compute the CRC32 over the firmware image starting from the validate_from offset
+  Logger.info(`Computed CRC32 value 0x${crcValue.toString(16)} for the firmware image, writing it to the firmware info section in flash memory...`);
+  fwImage.writeUInt32LE(crcValue, FWINFO_CRC32_OFFSET); // Write the computed CRC32 value to the correct offset in the firmware image
+
+
+
+
   Logger.info(`Starting firmware update process, waiting for synchronizing with bootloader...`);
   await syncWithBootloader(); // Wait for the bootloader to send its sync acknowledgment packet
   Logger.success(`Synchronized with bootloader, ready to proceed with firmware update!`);
@@ -469,7 +523,9 @@ const main = async () => {
 
   Logger.info(`Waiting for device ID request from bootloader...`);
   await waitForSingleBytePacket(BL_PACKET_DEVICE_ID_REQ_DATA0); // Wait for the bootloader to send a device ID request packet
-  const  devIDPacket = new Packet(2, Buffer.from([BL_PACKET_DEVICE_ID_RES_DATA0, DEVICE_ID]));
+  Logger.info(`Received device ID request from bootloader...`);
+  const deviceID = fwImage[FWINFO_DEVICE_ID_OFFSET]; // Read the device ID from the firmware image at the correct offset
+  const  devIDPacket = new Packet(2, Buffer.from([BL_PACKET_DEVICE_ID_RES_DATA0, deviceID]));
   writePacket(devIDPacket.toBuffer());
   Logger.info(`Responding with device ID response packet with device ID 0x${DEVICE_ID.toString(16)}, waiting for firmware length request from bootloader...`);
 
@@ -504,7 +560,7 @@ const main = async () => {
   Logger.success(`Firmware update completed successfully!`);
 }
 
-main().finally(() => {
-  uart.close(); // Close the serial port when the main function completes, whether it succeeded or threw an error
+main()
+//.catch(e => {throw e})  
+.finally(() => {uart.close(); // Close the serial port when the main function completes, whether it succeeded or threw an error
 });
-

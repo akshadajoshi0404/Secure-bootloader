@@ -3,17 +3,18 @@
 #include <libopencm3/cm3/vector.h>
 #include "common-defines.h"
 #include <libopencm3/stm32/memorymap.h>
+#include <libopencm3/cm3/scb.h>
 
 #include "core/uart.h"
+#include "core/firmware-info.h"
 #include "core/system.h"
 #include "comms.h"
 #include "bl-flash.h"
 #include "core/simple-timer.h"
+#include "core/crc.h"
+#include "core/firmware-info.h"
 
-#define BOOTLOADER_SIZE (0x8000U) /* 32 KB */
 #define BOOTLOADER_START (0x08000000U) /* Start of flash memory*/
-#define MAIN_APPL_START_ADDR (FLASH_BASE + BOOTLOADER_SIZE) /* Start address of main application */
-#define MAX_FW_LENGTH ((256*1024) - BOOTLOADER_SIZE) /* Maximum firmware length that can be accommodated in the main application area (256 KB - 32 KB for bootloader) */
 
 #define UART_PORT (GPIOA)
 #define RX_PIN    (GPIO3)
@@ -119,13 +120,30 @@ static void jump_to_main_app(void)
   typedef void (*app_entry_t)(void); /* Define a function pointer type for the main application entry point */
 
   /*Reset vector table to main application start address*/
-  uint32_t *reset_vector_entry = (uint32_t *)(MAIN_APPL_START_ADDR + 4U); /* Reset vector is at offset 4 */
+  uint32_t *reset_vector_entry = (uint32_t *)(MAIN_APP_START_ADDRESS + 4U); /* Reset vector is at offset 4 */
   uint32_t *reset_vector = (uint32_t *)*reset_vector_entry; /* Get the reset vector address from the main application */
     
   app_entry_t main_app_entry = (app_entry_t)reset_vector; /* Cast the reset vector to a function pointer */
   main_app_entry(); /* Jump to the main application */  
 }
 
+static bool validate_fw_image(void)
+{
+  firmware_info_t* firmware_info = (firmware_info_t*)FWINFO_ADDRESS; /* The firmware info struct is located at the start of the main application area in flash */
+
+  if(firmware_info->sentinel != FIRMWARE_INFO_SENTINEL)
+    return false; /* Check if the sentinel value is correct to validate that the firmware info struct is present and valid */
+
+  if(firmware_info->device_id != DEVICE_ID)
+    return false; /* Check if the device ID in the firmware info matches the expected device ID for this bootloader */
+
+  const uint32_t* start_addr = (const uint32_t*)FWINFO_VALIDATE_FROM; /* The actual firmware data starts immediately after the firmware info struct */
+  uint32_t computed_crc = crc32((const uint8_t*)start_addr, VALIDATE_LENGTH(firmware_info->length)); /* Compute the CRC32 of the firmware data using the length specified in the firmware info struct */
+  if(computed_crc != firmware_info->CRC32)
+    return false; /* Check if the computed CRC matches the CRC stored in the firmware info struct to validate the integrity of the firmware */
+  
+  return true; /* If all checks pass, the firmware image is considered valid */
+}
 
 int main(void) 
 {
@@ -360,7 +378,7 @@ int main(void)
           if(temp_packet.length > 0 && temp_packet.length <= PACKET_DATA_LENGTH) /* Check if the received packet has a valid length for firmware data */ 
           {
             /* Write the received firmware data to flash memory, in a real application you would want to keep track of the total bytes written and ensure that you don't write beyond the allocated flash memory for the main application */
-            bl_flash_write(MAIN_APPL_START_ADDR + bytes_written, temp_packet.data, (temp_packet.length & 0x0F)+1); /* Write the received firmware data to flash memory at the appropriate address based on how many bytes have been written so far */
+            bl_flash_write(MAIN_APP_START_ADDRESS + bytes_written, temp_packet.data, (temp_packet.length & 0x0F)+1); /* Write the received firmware data to flash memory at the appropriate address based on how many bytes have been written so far */
             bytes_written += (temp_packet.length & 0x0F)+1; /* Update the count of bytes written with the length of the received packet */
             simple_timer_reset(&timer); /* Reset the timer each time a valid firmware data packet is received to prevent timeout while waiting for the next packet */
             if(bytes_written >= firmware_length) /* Check if we have received and written all the expected firmware data based on the firmware length that was previously communicated, this is a condition to determine when we are done receiving firmware data */
@@ -401,7 +419,15 @@ int main(void)
   gpio_teardown(); /* Teardown GPIO configuration to ensure it's in a clean state before jumping to the main application, in a real application you would want to ensure that this does not affect any peripherals that the main application may be using or that the main application properly reinitializes any GPIO configuration it needs */
   system_teardown(); /* Teardown system configuration to ensure it's in a clean state before jumping to the main application, in a real application you would want to ensure that this does not affect the main application or that the main application properly reinitializes any system configuration it needs */
 
-  jump_to_main_app(); /* Jump to the main application */
+  if(validate_fw_image())
+  {
+    jump_to_main_app(); /* Jump to the main application */
+  }
+  else{
+    scb_reset_core();
+  }
+
+  
   return 0;  
 }
 
