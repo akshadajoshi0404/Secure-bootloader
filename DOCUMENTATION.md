@@ -19,9 +19,10 @@ This project implements a custom bare-metal bootloader and application firmware 
 
 Key capabilities:
 - Custom UART-based bootloader with firmware update over serial (115200 baud)
-- CRC-32 firmware integrity validation
-- Firmware metadata embedding (version, device ID, CRC)
-- Host-side Node.js/TypeScript firmware updater tool
+- **AES-128 CBC-MAC** cryptographic image authentication (hand-rolled AES core, no third-party crypto)
+- Firmware metadata embedding (version, device ID, length) cryptographically bound to the signature
+- Per-packet CRC-8 with RETX/ACK retransmission
+- Host-side Python firmware-signer (OpenSSL) and Node.js/TypeScript firmware updater
 - PWM LED fading demo application
 
 ---
@@ -119,12 +120,15 @@ graph TB
 typedef struct firmware_info_t {
     uint32_t sentinel;          // 0xDEADC0DE — magic marker
     uint32_t device_id;         // 0x42
-    uint32_t firmware_version;  // e.g. 0x00010000 = v1.0.0
-    uint32_t length;            // Total firmware image length (bytes)
-    uint32_t reserved[4];       // Reserved for future use
-    uint32_t CRC32;             // CRC-32 over code after firmware_info
+    uint32_t firmware_version;  // e.g. 0x01020304
+    uint32_t length;            // Total image length (from vector table) used by MAC
 } firmware_info_t;
 ```
+
+This 16-byte struct is exactly one AES block. It is the **first** block fed into the
+CBC-MAC, which cryptographically binds the version and length fields to the signature.
+The **AES-128 CBC-MAC signature** (16 bytes) is stored at `SIGNATURE_ADDRESS`,
+immediately after the `firmware_info_t` slot, and is *skipped* during MAC computation.
 
 ---
 
@@ -170,10 +174,11 @@ flowchart TD
     D -->|No| E[Stay in Bootloader]
     D -->|Yes| F{device_id == 0x42?}
     F -->|No| E
-    F -->|Yes| G[Compute CRC-32 over<br/>firmware body]
-    G --> H{CRC matches<br/>firmware_info.CRC32?}
-    H -->|Yes| I[Jump to Application]
-    H -->|No| E
+    F -->|Yes| G[AES-128 key schedule<br/>11 round keys]
+    G --> H[CBC-MAC pass:<br/>fw_info → vector table → body<br/>(skip signature region)]
+    H --> I{Final block == stored<br/>signature?}
+    I -->|Yes| J[Jump to Application]
+    I -->|No| E
 ```
 
 #### Jump to Application
@@ -201,15 +206,24 @@ flowchart TD
 | `crc.c` | Software CRC-8 (poly 0x07) and CRC-32 (poly 0xEDB88320) |
 | `simple-timer.c` | Tick-based software timers (one-shot and periodic) |
 
+### Firmware Signer (`fw-signer/`)
+
+A Python script that:
+1. Strips the 32 KB bootloader prefix from `firmware.bin`
+2. Patches the firmware version and length into `firmware_info_t`
+3. Builds the signing image as `[fw_info ‖ vector_table ‖ body]` so that
+   `fw_info` is the **first** AES block (binding version & length into the MAC)
+4. Invokes `openssl enc -aes-128-cbc -iv 0…0` and takes the **last** ciphertext
+   block as the CBC-MAC signature
+5. Splices the signature back into the image at `SIGNATURE_ADDRESS`
+
 ### Firmware Updater (`fw-updater/`)
 
 A Node.js TypeScript CLI tool that:
-1. Reads the combined `firmware.bin` from disk
-2. Slices off the 32 KB bootloader prefix
-3. Injects firmware length, version, and computed CRC-32 into the `firmware_info` section
-4. Sends sync sequence over UART
-5. Executes the full update protocol handshake
-6. Streams firmware in 16-byte packets with CRC-8 integrity
+1. Reads the **signed** image from disk
+2. Sends sync sequence over UART
+3. Executes the full update protocol handshake
+4. Streams firmware in 16-byte packets with CRC-8 integrity + RETX/ACK
 
 ---
 
@@ -411,11 +425,20 @@ bare-metal/
 
 ## Security & Integrity
 
-- **CRC-32 firmware validation**: Bootloader computes CRC-32 over the entire firmware body (excluding vector table and firmware_info struct) before jumping to the application
-- **Device ID check**: Bootloader verifies the firmware image's embedded device ID matches the expected value (`0x42`) before accepting an update
-- **Sentinel marker**: `0xDEADC0DE` identifies a valid firmware_info struct presence
-- **Per-packet CRC-8**: Every 18-byte packet on the wire is protected against corruption with automatic retransmission
-- **Length validation**: Firmware size must not exceed `MAX_FW_LENGTH` (224 KB)
+- **AES-128 CBC-MAC image authentication**: bootloader computes a CBC-MAC over
+  `firmware_info ‖ vector_table ‖ body` (signature region skipped) using a
+  hand-rolled AES-128 implementation, and refuses to boot any image whose
+  computed MAC does not match the stored 16-byte signature.
+- **Metadata binding**: because `firmware_info_t` is the first block fed into
+  the MAC, version & length cannot be tampered with or rolled back without
+  invalidating the signature.
+- **Device ID check**: firmware's embedded device ID must equal `0x42`.
+- **Sentinel marker**: `0xDEADC0DE` gates that a `firmware_info_t` is present.
+- **Per-packet CRC-8**: every 18-byte UART packet is protected with automatic
+  retransmission (`RETX 0x19` / `ACK 0x15`).
+- **Length validation**: firmware size capped at `MAX_FW_LENGTH` (224 KB).
+- **State watchdogs**: every protocol state has a 5 s timeout; on timeout the
+  bootloader emits NACK and refuses to jump.
 
 ---
 

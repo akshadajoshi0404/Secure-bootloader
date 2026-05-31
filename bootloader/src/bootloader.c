@@ -473,20 +473,25 @@ int main(void)
             simple_timer_reset(&timer); /* Reset the timer each time a valid firmware data packet is received to prevent timeout while waiting for the next packet */
             if(bytes_written >= firmware_length) /* Check if we have received and written all the expected firmware data based on the firmware length that was previously communicated, this is a condition to determine when we are done receiving firmware data */
             {
-              /* Validate the firmware image BEFORE reporting success to the host.
-                 This ensures corrupted/tampered firmware is rejected and the host
-                 is informed of the failure. */
+              /* Invalidate flash data cache before reading back what we just wrote.
+               * The STM32F4 ART accelerator data cache may serve stale values
+               * (e.g. 0xFF from before erase) if not reset after flash programming. */
+              flash_dcache_disable();
+              flash_dcache_reset();
+              flash_dcache_enable();
+
+              /* Validate firmware image BEFORE reporting success to the host */
               if(validate_fw_image())
               {
                 comms_create_single_byte_packet(&temp_packet, BL_PACKET_UPDATE_SUCCESSFUL_DATA0);
-                comms_send_packet(&temp_packet);
-                bootloader_state = BL_STATE_DONE;
+                comms_send_packet(&temp_packet); /* Firmware signature valid — inform host */
               }
               else
               {
-                /* Signature/integrity check failed — notify host and abort */
-                bootloading_failed();
+                comms_create_single_byte_packet(&temp_packet, BL_PACKET_NACK_DATA0);
+                comms_send_packet(&temp_packet); /* Firmware signature invalid — inform host */
               }
+              bootloader_state = BL_STATE_DONE; /* Transition to DONE state after validation */
             }
             else
             {
@@ -520,12 +525,17 @@ int main(void)
   gpio_teardown(); /* Teardown GPIO configuration to ensure it's in a clean state before jumping to the main application, in a real application you would want to ensure that this does not affect any peripherals that the main application may be using or that the main application properly reinitializes any GPIO configuration it needs */
   system_teardown(); /* Teardown system configuration to ensure it's in a clean state before jumping to the main application, in a real application you would want to ensure that this does not affect the main application or that the main application properly reinitializes any system configuration it needs */
 
+  /* Also invalidate cache here for the safety-net validation */
+  flash_dcache_disable();
+  flash_dcache_reset();
+  flash_dcache_enable();
+
   if(validate_fw_image())
   {
     jump_to_main_app(); /* Jump to the main application */
   }
   else{
-    scb_reset_core();
+    scb_reset_core(); /* Reset — board will re-enter bootloader and wait for new firmware */
   }
 
   

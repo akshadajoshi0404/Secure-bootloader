@@ -353,7 +353,7 @@ const consumeFromBuffer = (n: number) => {
  * raw packet bytes on CRC errors.  Set to false for clean production output
  * that only shows high-level progress and error messages.
  */
-const VERBOSE_DEBUG = true;
+const VERBOSE_DEBUG = false;
 
 uart.on('data', data => {
   // Append new bytes to the accumulation buffer
@@ -399,13 +399,10 @@ uart.on('data', data => {
       continue;
     }
 
-    // ── NACK from bootloader → abort ──
-    if (packet.isSingleBytePacket(BL_PACKET_NACK_DATA0)) {
-      Logger.error(`Received NACK from bootloader — aborting.`);
-      process.exit(1);
-    }
+    // ── NACK from bootloader → queue it so waitForPacket can handle it ──
+    // (Don't exit here — let the protocol handler decide what to do with it)
 
-    // ── Data/command packet → queue and acknowledge ──
+    // ── Data/command packet (including NACK) → queue and acknowledge ──
     packets.push(packet);
     writePacket(Packet.ack);
   }
