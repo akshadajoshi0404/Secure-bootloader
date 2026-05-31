@@ -48,11 +48,11 @@ const PACKET_RETX_DATA0     = 0x19;
 //Bootloader constat definations
 const BOOTLOADER_SIZE                = 0x8000; /* Size of the bootloader in bytes, used to calculate the offset for reading the firmware image from disk, in a real application you would want to ensure that this matches the actual size of your bootloader and that it is correctly aligned with the memory layout of your target device */
 const VECTOR_TABLE_SIZE              = (0x01B0); //(0x1AC);16byte alligned change the location  /* Size of the vector table in bytes, used to calculate the offset for the firmware info structure and the firmware image in flash memory, in a real application you would want to ensure that this matches the actual size of your vector table and that it is correctly aligned with the memory layout of your target device */
-const FWINFO_SIZE                    = (9*4); /* Size of the firmware info structure in bytes (9 x uint32_t: sentinel, device_id, firmware_version, length, reserved[4], CRC32) */   
+//const FWINFO_SIZE                    = (9*4); /* Size of the firmware info structure in bytes (9 x uint32_t: sentinel, device_id, firmware_version, length, reserved[4], CRC32) */   
 
-const FWINFO_VALIDATE_FROM           = (VECTOR_TABLE_SIZE + FWINFO_SIZE);
+//const FWINFO_VALIDATE_FROM           = (VECTOR_TABLE_SIZE + FWINFO_SIZE);
 const FWINFO_DEVICE_ID_OFFSET        = (VECTOR_TABLE_SIZE + (1*4)); /* Offset from the start of the firmware info structure to where the device ID is stored in flash memory, used to calculate the absolute address of the device ID in flash memory, in a real application you would want to ensure that this offset correctly accounts for the size of your firmware info structure and any padding or alignment requirements */
-const FWINFO_VERSION_OFFSET          = (VECTOR_TABLE_SIZE + (2*4)); /* Offset from the start of the firmware info structure to where the firmware version is stored in flash memory, used to calculate the absolute address of the firmware version in flash memory, in a real application you would want to ensure that this offset correctly accounts for the size of your firmware info structure and any padding or alignment requirements */
+//const FWINFO_VERSION_OFFSET          = (VECTOR_TABLE_SIZE + (2*4)); /* Offset from the start of the firmware info structure to where the firmware version is stored in flash memory, used to calculate the absolute address of the firmware version in flash memory, in a real application you would want to ensure that this offset correctly accounts for the size of your firmware info structure and any padding or alignment requirements */
 const FWINFO_LENGTH_OFFSET           = (VECTOR_TABLE_SIZE + (3*4)); /* Offset from the start of the firmware info structure to where the firmware length is stored in flash memory, used to calculate the absolute address of the firmware length in flash memory, in a real application you would want to ensure that this offset correctly accounts for the size of your firmware info structure and any padding or alignment requirements */
 const FWINFO_CRC32_OFFSET            = (VECTOR_TABLE_SIZE + (8*4)); /* CRC32 is the 9th field (0-indexed: 8) of firmware_info_t, at byte offset 32 from the start of the struct */
 
@@ -347,55 +347,53 @@ const consumeFromBuffer = (n: number) => {
  *  3. ACK received   → no action needed; the bootloader confirmed our last send.
  *  4. Data packet    → push onto `packets` queue and send ACK.
  */
+/** Enable verbose hex-level debug output (set to true when diagnosing framing issues). */
+const VERBOSE_DEBUG = false;
+
 uart.on('data', data => {
   // Append new bytes to the accumulation buffer
   rxBuffer = Buffer.concat([rxBuffer, data]);
-  console.log(`Received ${data.length} bytes | rxBuffer [${rxBuffer.length}]: ${rxBuffer.toString('hex').match(/../g)?.join(' ')}`);
 
-  // Loop: process every complete packet that has accumulated in the buffer.
-  // Using 'while' instead of 'if' is critical — if the remote side sends two
-  // packets back-to-back (e.g. ACK + READY_FOR_DATA), a single 'if' would
-  // only consume the first one, leaving stale bytes that corrupt the next
-  // incoming fragment and desynchronise the framing.
-  // How to debug this class of problem next time:
-  //Print rxBuffer as hex on every data event before parsing — you'd have seen the leftover byte count increasing between exchanges, immediately pointing to the single-packet processing bug.
-  //Log each parse attempt with full raw bytes and CRC mismatch details — a misaligned garbage frame would have shown up as a CRC failure on bytes that don't look like any expected packet.
-  //Add a running byte-offset counter — when the frame alignment is off, the first data byte of each parsed packet will be offset by the residual byte count, making the desync obvious from the log alone.
+  if (VERBOSE_DEBUG) {
+    console.log(`  [RX] +${data.length} bytes | rxBuffer [${rxBuffer.length}]: ${rxBuffer.toString('hex').match(/../g)?.join(' ')}`);
+  }
+
+  // Process every complete packet that has accumulated in the buffer.
+  // Using 'while' handles back-to-back packets (e.g. ACK + READY_FOR_DATA)
+  // that arrive in a single OS read.
   while (rxBuffer.length >= PACKET_LENGTH) {
-    // Consume exactly PACKET_LENGTH bytes from the front of the buffer
     const raw = consumeFromBuffer(PACKET_LENGTH);
-    // Deserialise: length byte, 16-byte data slice, and the wire CRC
     const packet = new Packet(raw[0], raw.slice(1, 1+PACKET_DATA_BYTES), raw[PACKET_CRC_INDEX]);
     const computedCrc = packet.computeCrc();
-    console.log(`Parsed packet | raw: ${raw.toString('hex').match(/../g)?.join(' ')} | len=0x${packet.length.toString(16)} data[0]=0x${packet.data[0].toString(16)} wireCrc=0x${packet.crc.toString(16)} computedCrc=0x${computedCrc.toString(16)}`);
 
-    // CRC check — if the wire CRC doesn't match, the packet is corrupted
+    // ── CRC mismatch → request retransmission ──
     if (packet.crc !== computedCrc) {
-      console.log(`CRC mismatch — sending RETX`);
-      writePacket(Packet.retx); // Ask the bootloader to resend its last packet
+      Logger.error(`CRC mismatch (wire=0x${packet.crc.toString(16)} computed=0x${computedCrc.toString(16)}) — sending RETX`);
+      if (VERBOSE_DEBUG) console.log(`  [RAW] ${raw.toString('hex').match(/../g)?.join(' ')}`);
+      writePacket(Packet.retx);
       continue;
     }
 
-    // RETX — the bootloader is requesting we resend our previous packet
+    // ── RETX from bootloader → resend last packet ──
     if (packet.isRetx()) {
-      console.log(`RETX received — retransmitting last packet`);
+      Logger.info(`<< RETX — retransmitting last packet`);
       writePacket(lastPacket);
       continue;
     }
 
-    // ACK — the bootloader successfully received our last packet; nothing to do
+    // ── ACK from bootloader → our last send was received OK ──
     if (packet.isAck()) {
-      console.log(`ACK received`);
+      if (VERBOSE_DEBUG) console.log(`  [ACK]`);
       continue;
     }
 
+    // ── NACK from bootloader → abort ──
     if (packet.isSingleBytePacket(BL_PACKET_NACK_DATA0)) {
-      Logger.error(`Received NACK from bootloader, Exitting.  `);
+      Logger.error(`Received NACK from bootloader — aborting.`);
       process.exit(1);
     }
 
-    // Data packet — store it in the queue and acknowledge receipt
-    console.log(`Data packet queued (queue depth now ${packets.length + 1})`);
+    // ── Data/command packet → queue and acknowledge ──
     packets.push(packet);
     writePacket(Packet.ack);
   }
@@ -494,25 +492,27 @@ const main = async () => {
   //packetToSend.crc++; // Intentionally corrupt CRC for testing
   //uart.write(packetToSend.toBuffer());
 
+  if(process.argv.length > 3) {
+    Logger.error("Unexpected command line arguments : fw-updater <signed fimware image path>  ");
+    process.exit(1);
+  }
+  
+  const FirmwareFileName = process.argv[2];
   Logger.info("Reading the firmware Image binary from disk...");
-  const fwImage = await fs.readFile(path.join(process.cwd(), "firmware.bin"))
-   .then(bin => bin.slice(BOOTLOADER_SIZE));
-
+  const fwImage = await fs.readFile(path.join(process.cwd(),FirmwareFileName))
   const fwLength = fwImage.length;
   Logger.success(`Firmware image read successfully, size after slicing off bootloader: ${fwLength} bytes`);
 
-  Logger.info("Injecting into firmware information section in flash memory...");
-  fwImage.writeUInt32LE(fwLength, FWINFO_LENGTH_OFFSET); // Write the sentinel value at the correct offset in the firmware image
-  fwImage.writeUInt32LE(0x00010000, FWINFO_VERSION_OFFSET); // Write the sentinel value at the correct offset in the firmware image
-  const crcValue = crc32(fwImage.slice(FWINFO_VALIDATE_FROM),fwLength-(VECTOR_TABLE_SIZE + FWINFO_SIZE)); // Compute the CRC32 over the firmware image starting from the validate_from offset
-  Logger.info(`Computed CRC32 value 0x${crcValue.toString(16)} for the firmware image, writing it to the firmware info section in flash memory...`);
-  fwImage.writeUInt32LE(crcValue, FWINFO_CRC32_OFFSET); // Write the computed CRC32 value to the correct offset in the firmware image
-
-
-
+//  Logger.info("Injecting into firmware information section in flash memory...");
+//  fwImage.writeUInt32LE(fwLength, FWINFO_LENGTH_OFFSET); // Write the sentinel value at the correct offset in the firmware image
+//  fwImage.writeUInt32LE(0x00010000, FWINFO_VERSION_OFFSET); // Write the sentinel value at the correct offset in the firmware image
+//  const crcValue = crc32(fwImage.slice(FWINFO_VALIDATE_FROM),fwLength-(VECTOR_TABLE_SIZE + FWINFO_SIZE)); // Compute the CRC32 over the firmware image starting from the validate_from offset
+//  Logger.info(`Computed CRC32 value 0x${crcValue.toString(16)} for the firmware image, writing it to the firmware info section in flash memory...`);
+//  fwImage.writeUInt32LE(crcValue, FWINFO_CRC32_OFFSET); // Write the computed CRC32 value to the correct offset in the firmware image
 
   Logger.info(`Starting firmware update process, waiting for synchronizing with bootloader...`);
   await syncWithBootloader(); // Wait for the bootloader to send its sync acknowledgment packet
+  rxBuffer = Buffer.from([]); // Flush any stray bytes that arrived during sync handshake
   Logger.success(`Synchronized with bootloader, ready to proceed with firmware update!`);
 
   Logger.info(`Sending firmware update request packet...`);
@@ -546,16 +546,35 @@ const main = async () => {
   Logger.info(`Waiting for ready for data packet from bootloader...3sec`);
   await delay(1000); // Wait a bit to give the bootloader time to erase the main application area before we start sending data packets
   
+  // ═══════════════════════════════════════════════════════════════════════
+  // FIRMWARE DATA TRANSFER
+  // ═══════════════════════════════════════════════════════════════════════
+  Logger.info(`Starting data transfer: ${fwLength} bytes in ${Math.ceil(fwLength / PACKET_DATA_BYTES)} packets...`);
+  console.log(`────────────────────────────────────────────────────────────────`);
+
   let byteWritten = 0;
+  let packetCount = 0;
+  const totalPackets = Math.ceil(fwLength / PACKET_DATA_BYTES);
+  const startTime = Date.now();
+
   while(byteWritten < fwLength) {
-   await waitForSingleBytePacket(BL_PACKET_READY_FOR_DATA_DATA0); // Wait for the bootloader to send a ready for data packet before sending each firmware data packet
-    const chunkSize = Math.min(PACKET_DATA_BYTES, fwLength - byteWritten);// Calculate the size of the next chunk to send, ensuring we don't exceed the firmware length
+    await waitForSingleBytePacket(BL_PACKET_READY_FOR_DATA_DATA0);
+    const chunkSize = Math.min(PACKET_DATA_BYTES, fwLength - byteWritten);
     const dataChunk = fwImage.slice(byteWritten, byteWritten + chunkSize);
     const dataPacket = new Packet(chunkSize-1, dataChunk);
     writePacket(dataPacket.toBuffer());
-    Logger.info(`Sent firmware data packet with bytes ${byteWritten} to ${byteWritten + chunkSize - 1},.`);
-    byteWritten += chunkSize; 
+    byteWritten += chunkSize;
+    packetCount++;
+
+    // Progress indicator: print every 10 packets or on the last one
+    if (packetCount % 10 === 0 || byteWritten >= fwLength) {
+      const percent = ((byteWritten / fwLength) * 100).toFixed(1);
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      process.stdout.write(`\r  [${percent}%] ${byteWritten}/${fwLength} bytes | packet ${packetCount}/${totalPackets} | ${elapsed}s elapsed`);
+    }
   }
+  console.log(''); // newline after progress
+  console.log(`────────────────────────────────────────────────────────────────`);
   await waitForSingleBytePacket(BL_PACKET_UPDATE_SUCCESSFUL_DATA0, 10000); // Wait for the bootloader to send a firmware update successful packet, with a longer timeout to account for the time it may take to write the firmware to flash 
   Logger.success(`Firmware update completed successfully!`);
 }

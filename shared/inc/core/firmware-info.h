@@ -6,7 +6,7 @@
 #include <libopencm3/cm3/vector.h>
 
 
-#define ALIGNED(adress, alignment) (((address) + ((alignment) - 1)) & ~((alignment) - 1))
+#define ALIGNED(address, alignment) (((address) + ((alignment) - 1)) & ~((alignment) - 1))
 #define BOOTLOADER_SIZE             (0x8000U)
 #define MAIN_APP_START_ADDRESS      (FLASH_BASE + BOOTLOADER_SIZE)
 #define MAX_FW_LENGTH               ((1024*256) - BOOTLOADER_SIZE)

@@ -1,7 +1,7 @@
 #ifndef AES__H
 #define AES__H
 
-#include "common.h"
+#include "common-defines.h"
 
 #define NUM_ROUND_KEYS_128 (11)
 #define AES_BLOCK_SIZE      (16)

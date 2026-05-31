@@ -12,7 +12,9 @@
 #include "bl-flash.h"
 #include "core/simple-timer.h"
 #include "core/crc.h"
-#include "core/firmware-info.h"
+#include "aes.h"
+#include "common-defines.h"
+#include <string.h>
 
 #define BOOTLOADER_START (0x08000000U) /* Start of flash memory*/
 
@@ -47,6 +49,15 @@ static uint32_t bytes_written = 0; /* Variable to track the number of bytes writ
 static uint8_t sync_seq[4] = {0};
 static simple_timer_t timer;
 static comms_packet_t temp_packet;
+
+//Secrete key 
+static const uint8_t secrete_key[AES_BLOCK_SIZE] = 
+{ 0x00, 0x11, 0x22, 0x33, 
+  0x44, 0x55, 0x66, 0x77, 
+  0x88, 0x99, 0xaa, 0xbb, 
+  0xcc, 0xdd, 0xee, 0xff
+}; 
+
 
 //const uint8_t data[0x8000U] = {0};
 static void bootloading_failed(void)
@@ -127,22 +138,93 @@ static void jump_to_main_app(void)
   main_app_entry(); /* Jump to the main application */  
 }
 
+
+static void aes_cbc_mac_step(AES_Block_t aes_state, AES_Block_t prev_state, const AES_Block_t* key_schedule)
+{
+  //CBC Chaning operation for CBC-MAC calculation, this function takes the current state (cipher block) and the previous state (previous cipher block or IV for the first block) and performs the XOR operation needed for CBC mode before encryption. In a real implementation, you would also need to perform the AES encryption step after this XOR operation to get the next cipher block, which would then be used as the prev_state for the next block of data.
+  for(uint8_t i = 0; i < AES_BLOCK_SIZE; i++)
+  {
+    ((uint8_t*)aes_state)[i] ^= ((uint8_t*)prev_state)[i]; /* XOR the current block with the previous cipher block (or IV for the first block) */
+  }
+
+  AES_EncryptBlock(aes_state, key_schedule); /* Encrypt the state in-place, in a real implementation you would want to handle the round keys and the encryption process according to the AES specification */
+  memcpy(prev_state,aes_state,AES_BLOCK_SIZE); /* Update the previous state to be the current cipher block for the next iteration */
+}
+
 static bool validate_fw_image(void)
 {
   firmware_info_t* firmware_info = (firmware_info_t*)FWINFO_ADDRESS; /* The firmware info struct is located at the start of the main application area in flash */
-
+  const uint8_t* signature = (const uint8_t*)SIGNATURE_ADDRESS; /* The signature is located immediately after the firmware info struct, this is the last block of the firmware image and is not included in the CBC-MAC calculation */
   if(firmware_info->sentinel != FIRMWARE_INFO_SENTINEL)
     return false; /* Check if the sentinel value is correct to validate that the firmware info struct is present and valid */
 
   if(firmware_info->device_id != DEVICE_ID)
     return false; /* Check if the device ID in the firmware info matches the expected device ID for this bootloader */
 
-  const uint32_t* start_addr = (const uint32_t*)FWINFO_VALIDATE_FROM; /* The actual firmware data starts immediately after the firmware info struct */
-  uint32_t computed_crc = crc32((const uint8_t*)start_addr, VALIDATE_LENGTH(firmware_info->length)); /* Compute the CRC32 of the firmware data using the length specified in the firmware info struct */
-  if(computed_crc != firmware_info->CRC32)
-    return false; /* Check if the computed CRC matches the CRC stored in the firmware info struct to validate the integrity of the firmware */
+//  const uint32_t* start_addr = (const uint32_t*)FWINFO_VALIDATE_FROM; /* The actual firmware data starts immediately after the firmware info struct */
+//  uint32_t computed_crc = crc32((const uint8_t*)start_addr, VALIDATE_LENGTH(firmware_info->length)); /* Compute the CRC32 of the firmware data using the length specified in the firmware info struct */
+//  if(computed_crc != firmware_info->CRC32)
+//    return false; /* Check if the computed CRC matches the CRC stored in the firmware info struct to validate the integrity of the firmware */
   
-  return true; /* If all checks pass, the firmware image is considered valid */
+  /* ToDo : Signature verification can be added here in the future, for example by using a public key to verify a 
+     signature included in the firmware info struct, 
+     this would provide stronger security guarantees than just using a CRC for integrity checking. */
+  /*
+  validation process:
+  1. Bootloader needs to contains the AES key
+  2. Block by block, use the AES-CBC (CBC_MAC) decrypt process to calculate the MAC of the firmware image, starting from the vector table, and compare it with the signature included in the firmware info struct. The firmware image is considered valid if the calculated MAC matches the signature in the firmware info struct.
+  3. First encrypt the firmware info section, which contains both the length and the incrementing version number 
+  4. Ignore the signature section when calculating the MAC, since the signature is calculated over the firmware info section and the firmware data section, but the signature itself is not included in the calculation. The signature is located immediately after the firmware info section, so it can be easily skipped when calculating the MAC.
+  5. the after the final block is decrypted, this is the signature. "memcmp" the signature with what is stored. If it doesnt match stay in the bootloader (reset)
+  */
+
+  AES_Block_t round_key[NUM_ROUND_KEYS_128];
+  AES_KeySchedule128(secrete_key, round_key); /* Perform AES key schedule for the given key, in a real application you would want to store the expanded keys and use them for the CBC-MAC calculation */
+
+  AES_Block_t state = {0}; 
+  AES_Block_t prev_cipher_block = {0}; /* For CBC-MAC, the previous cipher block is initialized to zero */
+  uint8_t bytes_to_pad = (firmware_info->length % AES_BLOCK_SIZE) ? (AES_BLOCK_SIZE - (firmware_info->length % AES_BLOCK_SIZE)) : 0; /* Calculate the number of padding bytes needed to align the firmware data to the AES block size */
+
+  memcpy(state, firmware_info, sizeof(firmware_info_t)); /* Start the CBC-MAC calculation with the firmware info struct as the first block, this includes the length and other metadata about the firmware, but not the signature */
+  aes_cbc_mac_step(state, prev_cipher_block, round_key); /* Perform the first step of the AES-CBC-MAC calculation with the firmware info block */
+  
+  uint32_t offset = 0;
+  while(offset < firmware_info->length)
+  {
+    if(offset == (FWINFO_ADDRESS - MAIN_APP_START_ADDRESS)) /* Skip the signature block when calculating the MAC, since the signature is not included in the calculation */
+    {
+      offset += AES_BLOCK_SIZE*2; /* Skip the signature block, which is the next block after the firmware info struct */
+      continue;
+    }
+
+    //Are we at the last block and need to pad?
+    if(firmware_info->length - offset > AES_BLOCK_SIZE)
+    {
+      //regular block, no padding needed
+      memcpy(state, (const uint8_t*)MAIN_APP_START_ADDRESS + offset, AES_BLOCK_SIZE); /* Copy the next block of firmware data into the state for the CBC-MAC calculation */
+      aes_cbc_mac_step(state, prev_cipher_block, round_key); /* Perform the AES-CBC-MAC step for this block */
+    }
+    else
+    {
+      //case for the last block, need to pad with 0x00
+      if(bytes_to_pad == 16)
+      {
+        memcpy(state, (const uint8_t*)MAIN_APP_START_ADDRESS + offset, AES_BLOCK_SIZE); /* Copy the remaining firmware data into the state for the CBC-MAC calculation, this is the last block which may not be a full block */
+        aes_cbc_mac_step(state, prev_cipher_block, round_key); /* Perform the AES-CBC-MAC step for the last block */
+        
+        memset(state, bytes_to_pad, AES_BLOCK_SIZE); /* If padding is needed, pad the remaining bytes with 0x00, in this case since the last block is exactly the block size, we need to add an additional block of padding */
+        aes_cbc_mac_step(state, prev_cipher_block, round_key); /* Perform the AES-CBC-MAC step for the padding block */
+      }
+      else
+      {
+        memcpy(state, (const uint8_t*)(MAIN_APP_START_ADDRESS + offset), AES_BLOCK_SIZE - bytes_to_pad); /* Copy the remaining firmware data into the state for the CBC-MAC calculation, this is the last block which may not be a full block */
+        memset((uint8_t*)state + (AES_BLOCK_SIZE - bytes_to_pad), bytes_to_pad, bytes_to_pad); /* Pad the remaining bytes with 0x00 if the last block is not a full block */
+        aes_cbc_mac_step(state, prev_cipher_block, round_key); /* Perform the AES-CBC-MAC step for the last block with padding */
+      }
+    }
+    offset += AES_BLOCK_SIZE; /* Move to the next block */
+  }
+  return memcmp(signature, state, AES_BLOCK_SIZE) == 0; /* If all checks pass, the firmware image is considered valid */
 }
 
 int main(void) 
@@ -243,6 +325,14 @@ int main(void)
         is_match = is_match && (sync_seq[3] == SYNC_SEQ_3);
         if(is_match)
         {
+          /* Flush any leftover sync bytes from the UART buffer before
+             transitioning to the packet-based protocol. If the host sent
+             multiple sync sequences before we matched, the remaining bytes
+             would corrupt the comms_update() framing state machine. */
+          while(uart_data_available())
+          {
+            (void)uart_read_byte();
+          }
           comms_create_single_byte_packet(&temp_packet, BL_PACKET_SYNC_OBSERVED_DATA0);
           comms_send_packet(&temp_packet);
           bootloader_state = BL_STATE_WAIT_FOR_FW_UPDATE_REQ;

@@ -7,7 +7,8 @@
                 "${workspaceFolder}/libopencm3/include",
                 "${workspaceFolder}/shared/inc",
                 "${workspaceFolder}/bootloader/inc",
-                "${workspaceFolder}/libopencm3/include/libopencm3/cm3"
+                "${workspaceFolder}/libopencm3/include/libopencm3/cm3",
+                "${workspaceFolder}/shared/inc/core"
             ],
             "defines": [
                 "STM32F4"
