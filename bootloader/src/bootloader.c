@@ -473,9 +473,20 @@ int main(void)
             simple_timer_reset(&timer); /* Reset the timer each time a valid firmware data packet is received to prevent timeout while waiting for the next packet */
             if(bytes_written >= firmware_length) /* Check if we have received and written all the expected firmware data based on the firmware length that was previously communicated, this is a condition to determine when we are done receiving firmware data */
             {
-              comms_create_single_byte_packet(&temp_packet, BL_PACKET_UPDATE_SUCCESSFUL_DATA0);
-              comms_send_packet(&temp_packet); /* Send a packet indicating that the firmware update was successful, in a real application you might want to include additional information or perform other actions here */
-              bootloader_state = BL_STATE_DONE; /* Transition to DONE state after successfully receiving and writing all firmware data */
+              /* Validate the firmware image BEFORE reporting success to the host.
+                 This ensures corrupted/tampered firmware is rejected and the host
+                 is informed of the failure. */
+              if(validate_fw_image())
+              {
+                comms_create_single_byte_packet(&temp_packet, BL_PACKET_UPDATE_SUCCESSFUL_DATA0);
+                comms_send_packet(&temp_packet);
+                bootloader_state = BL_STATE_DONE;
+              }
+              else
+              {
+                /* Signature/integrity check failed — notify host and abort */
+                bootloading_failed();
+              }
             }
             else
             {

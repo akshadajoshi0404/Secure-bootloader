@@ -347,13 +347,21 @@ const consumeFromBuffer = (n: number) => {
  *  3. ACK received   → no action needed; the bootloader confirmed our last send.
  *  4. Data packet    → push onto `packets` queue and send ACK.
  */
-/** Enable verbose hex-level debug output (set to true when diagnosing framing issues). */
-const VERBOSE_DEBUG = false;
+/**
+ * LOGGING CHANGE: Verbose debug flag.
+ * When true, enables low-level hex dumps of every UART receive event and
+ * raw packet bytes on CRC errors.  Set to false for clean production output
+ * that only shows high-level progress and error messages.
+ */
+const VERBOSE_DEBUG = true;
 
 uart.on('data', data => {
   // Append new bytes to the accumulation buffer
   rxBuffer = Buffer.concat([rxBuffer, data]);
 
+  // LOGGING CHANGE: Hex dump of every incoming UART chunk, showing buffer
+  // accumulation state.  Invaluable for diagnosing byte-level framing issues
+  // but extremely noisy during normal operation — gated by VERBOSE_DEBUG.
   if (VERBOSE_DEBUG) {
     console.log(`  [RX] +${data.length} bytes | rxBuffer [${rxBuffer.length}]: ${rxBuffer.toString('hex').match(/../g)?.join(' ')}`);
   }
@@ -369,6 +377,8 @@ uart.on('data', data => {
     // ── CRC mismatch → request retransmission ──
     if (packet.crc !== computedCrc) {
       Logger.error(`CRC mismatch (wire=0x${packet.crc.toString(16)} computed=0x${computedCrc.toString(16)}) — sending RETX`);
+      // LOGGING CHANGE: Dump the raw 18-byte packet that failed CRC check
+      // so we can visually inspect where framing went wrong.
       if (VERBOSE_DEBUG) console.log(`  [RAW] ${raw.toString('hex').match(/../g)?.join(' ')}`);
       writePacket(Packet.retx);
       continue;
@@ -383,6 +393,8 @@ uart.on('data', data => {
 
     // ── ACK from bootloader → our last send was received OK ──
     if (packet.isAck()) {
+      // LOGGING CHANGE: ACK receipts are very frequent during data transfer;
+      // only log them in verbose mode to avoid flooding the console.
       if (VERBOSE_DEBUG) console.log(`  [ACK]`);
       continue;
     }
@@ -512,7 +524,9 @@ const main = async () => {
 
   Logger.info(`Starting firmware update process, waiting for synchronizing with bootloader...`);
   await syncWithBootloader(); // Wait for the bootloader to send its sync acknowledgment packet
-  rxBuffer = Buffer.from([]); // Flush any stray bytes that arrived during sync handshake
+  // LOGGING CHANGE (related): Flush rxBuffer after sync to prevent leftover
+  // sync-phase bytes from corrupting the first framed packet parse.
+  rxBuffer = Buffer.from([]);
   Logger.success(`Synchronized with bootloader, ready to proceed with firmware update!`);
 
   Logger.info(`Sending firmware update request packet...`);
@@ -566,7 +580,10 @@ const main = async () => {
     byteWritten += chunkSize;
     packetCount++;
 
-    // Progress indicator: print every 10 packets or on the last one
+    // LOGGING CHANGE: Replaced per-packet hex dump with a compact progress
+    // indicator that overwrites itself on a single line using \r.  Updates
+    // every 10 packets (or on the final packet) to keep console output clean
+    // while still giving the user real-time transfer feedback.
     if (packetCount % 10 === 0 || byteWritten >= fwLength) {
       const percent = ((byteWritten / fwLength) * 100).toFixed(1);
       const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -575,8 +592,20 @@ const main = async () => {
   }
   console.log(''); // newline after progress
   console.log(`────────────────────────────────────────────────────────────────`);
-  await waitForSingleBytePacket(BL_PACKET_UPDATE_SUCCESSFUL_DATA0, 10000); // Wait for the bootloader to send a firmware update successful packet, with a longer timeout to account for the time it may take to write the firmware to flash 
-  Logger.success(`Firmware update completed successfully!`);
+  Logger.info(`Data transfer complete. Waiting for bootloader validation result...`);
+
+  // Wait for either UPDATE_SUCCESSFUL or NACK from bootloader
+  const validationPacket = await waitForPacket(10000);
+  if (validationPacket.isSingleBytePacket(BL_PACKET_UPDATE_SUCCESSFUL_DATA0)) {
+    Logger.success(`Firmware update completed successfully! (signature validated)`);
+  } else if (validationPacket.isSingleBytePacket(BL_PACKET_NACK_DATA0)) {
+    Logger.error(`Firmware validation FAILED on device — image was rejected (signature/integrity check failed).`);
+    process.exit(1);
+  } else {
+    const formattedPacket = [...validationPacket.toBuffer()].map(b => b.toString(16).padStart(2,'0')).join(' ');
+    Logger.error(`Unexpected response after data transfer: ${formattedPacket}`);
+    process.exit(1);
+  }
 }
 
 main()
