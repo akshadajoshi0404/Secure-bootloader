@@ -36,9 +36,13 @@ SECTIONS
 {
 	.text : {
 		KEEP (*(.bootloader_section))    /*AJ - include bootloader in firmware.c in first place*/
+		
 		*(.vectors)	/* Vector table */
+		. = ALIGN(16);
 
 		KEEP (*(.firmware_info))  /*AJ - include and keep the firmwareinfo*/
+		KEEP (*(.firmware_signature))
+		
 		*(.text*)	/* Program code */
 		. = ALIGN(4);
 		*(.rodata*)	/* Read-only data */

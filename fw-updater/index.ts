@@ -47,7 +47,7 @@ const PACKET_RETX_DATA0     = 0x19;
 
 //Bootloader constat definations
 const BOOTLOADER_SIZE                = 0x8000; /* Size of the bootloader in bytes, used to calculate the offset for reading the firmware image from disk, in a real application you would want to ensure that this matches the actual size of your bootloader and that it is correctly aligned with the memory layout of your target device */
-const VECTOR_TABLE_SIZE              = (0x1AC); /* Size of the vector table in bytes, used to calculate the offset for the firmware info structure and the firmware image in flash memory, in a real application you would want to ensure that this matches the actual size of your vector table and that it is correctly aligned with the memory layout of your target device */
+const VECTOR_TABLE_SIZE              = (0x01B0); //(0x1AC);16byte alligned change the location  /* Size of the vector table in bytes, used to calculate the offset for the firmware info structure and the firmware image in flash memory, in a real application you would want to ensure that this matches the actual size of your vector table and that it is correctly aligned with the memory layout of your target device */
 const FWINFO_SIZE                    = (9*4); /* Size of the firmware info structure in bytes (9 x uint32_t: sentinel, device_id, firmware_version, length, reserved[4], CRC32) */   
 
 const FWINFO_VALIDATE_FROM           = (VECTOR_TABLE_SIZE + FWINFO_SIZE);
