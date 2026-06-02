@@ -169,6 +169,8 @@ stateDiagram-v2
 
 ### Wire format (fixed 18 bytes)
 
+
+
 ```
 ┌──────────┬─────────────────────────────┬──────────┐
 │ Length   │ Data (16 bytes, 0xFF pad)   │ CRC-8    │
